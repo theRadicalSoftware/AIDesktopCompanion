@@ -1,0 +1,21 @@
+{
+  "runtime": {
+    "aiProviders": {
+      "slack": {
+        "enabled": true,
+        "sendAs": "bot",
+        "transcriptEnabled": true,
+        "transcriptDir": "runtime-slack",
+        "contacts": [
+          {
+            "id": "teammate",
+            "label": "Teammate",
+            "userId": "U1234567890",
+            "sendAs": "bot"
+          }
+        ],
+        "pollEnabled": true
+      }
+    }
+  }
+}
