@@ -2,6 +2,10 @@
 
 A Linux-first local desktop companion runtime for AI-assisted work.
 
+Inspired by Codex Pets. Not affiliated with OpenAI. Built as a local Linux-first exploration of AI desktop companions.
+
+Early experimental release. Tested primarily on Pop!_OS/X11. Wayland support is not the focus yet.
+
 The app runs a transparent, always-on-top PyQt6 companion on X11. It can walk around the desktop, react to drag/drop, show Codex session status in an animated thought bubble, accept replies, and run optional provider bridges for Codex, Claude, Slack, and GitHub.
 
 This public repo is the reusable engine and template kit. It intentionally ships with a neutral `starter-buddy` demo pet instead of a personal character pack.
