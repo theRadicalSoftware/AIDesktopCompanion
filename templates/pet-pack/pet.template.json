@@ -183,6 +183,20 @@
       "replyAnimation": "review",
       "bubbleReplyEnabled": true,
       "outputDir": "runtime-work"
+    },
+    "companions": {
+      "enabled": false,
+      "menuLabel": "Companions",
+      "entries": [
+        {
+          "id": "sidekick",
+          "label": "Sidekick",
+          "pet": "sidekick",
+          "scale": 1.0,
+          "speed": 0.9,
+          "codexSession": "off"
+        }
+      ]
     }
   },
   "hatch": {

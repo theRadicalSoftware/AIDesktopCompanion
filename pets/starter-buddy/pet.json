@@ -196,6 +196,20 @@
       "restOnLimitExhausted": true,
       "outputDir": "runtime-work",
       "statusHoldSeconds": 28
+    },
+    "companions": {
+      "enabled": false,
+      "menuLabel": "Companions",
+      "entries": [
+        {
+          "id": "example-sidekick",
+          "label": "Example Sidekick",
+          "pet": "starter-buddy",
+          "scale": 1.0,
+          "speed": 0.9,
+          "codexSession": "off"
+        }
+      ]
     }
   },
   "hatch": {

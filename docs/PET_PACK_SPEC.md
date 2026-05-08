@@ -97,9 +97,35 @@ The starter manifest in `pets/starter-buddy/pet.json` is the best reference. Run
     "codexBubble": {},
     "codexUsage": {},
     "aiProviders": {},
-    "workDrop": {}
+    "workDrop": {},
+    "companions": {}
   }
 }
 ```
+
+`runtime.companions` is optional. When enabled, it adds a right-click submenu that launches additional pet packs as detached processes:
+
+```json
+{
+  "runtime": {
+    "companions": {
+      "enabled": true,
+      "menuLabel": "Companions",
+      "entries": [
+        {
+          "id": "sidekick",
+          "label": "Sidekick",
+          "pet": "sidekick",
+          "scale": 1.0,
+          "speed": 0.9,
+          "codexSession": "off"
+        }
+      ]
+    }
+  }
+}
+```
+
+Use a separate pet folder for each companion so runtime state and output files do not collide. `codexSession: "off"` is the safe default for independent companion work. Use an explicit session id or rollout path when one companion should watch one known Codex terminal.
 
 Do not store API keys, Slack tokens, SSH keys, personal user IDs, or private project names in `pet.json`.

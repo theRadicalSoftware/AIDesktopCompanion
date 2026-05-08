@@ -5,6 +5,7 @@ import math
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -39,6 +40,7 @@ from .codex_bridge import (
 )
 from .codex_monitor import CodexSessionMonitor, CodexStatus
 from .codex_usage import CodexUsageMonitor, CodexUsageStatus, UsageWindow
+from .pet_format import DEFAULT_PETS_DIR
 
 
 AI_PROVIDER_SLACK = "slack"
@@ -1471,6 +1473,7 @@ class DesktopPet(QWidget):
     ) -> None:
         super().__init__()
         self.pet_dir = pet_dir
+        self.repo_root = Path(__file__).resolve().parents[1]
         self.manifest = json.loads((pet_dir / "pet.json").read_text(encoding="utf-8"))
         self.cell_width = int(self.manifest["cellWidth"])
         self.cell_height = int(self.manifest["cellHeight"])
@@ -1556,6 +1559,11 @@ class DesktopPet(QWidget):
         self.idle_pocket_max_ticks = max(self.idle_pocket_min_ticks, int(idle_mixins.get("pocketMaxTicks", 110)))
         work_drop = runtime.get("workDrop", {})
         self.work_drop_enabled = bool(work_drop.get("enabled", True))
+        companions = runtime.get("companions", {})
+        if not isinstance(companions, dict):
+            companions = {}
+        self.companion_menu_label = str(companions.get("menuLabel", "Companions")).strip() or "Companions"
+        self.companion_entries = self.parse_companion_entries(companions)
         providers = runtime.get("aiProviders", {})
         claude_provider = providers.get("claude", {}) if isinstance(providers.get("claude"), dict) else {}
         self.claude_enabled = bool(claude_provider.get("enabled", True))
@@ -2601,6 +2609,107 @@ class DesktopPet(QWidget):
             return
         self.work_history.append(cleaned)
         self.work_history = self.work_history[-8:]
+
+    def parse_companion_entries(self, companions: dict) -> list[dict[str, object]]:
+        if not companions.get("enabled", False):
+            return []
+        raw_entries = companions.get("entries", [])
+        if not isinstance(raw_entries, list):
+            return []
+
+        entries: list[dict[str, object]] = []
+        for index, raw in enumerate(raw_entries, start=1):
+            if not isinstance(raw, dict) or raw.get("enabled", True) is False:
+                continue
+            pet = str(raw.get("pet") or raw.get("petId") or "").strip()
+            if not pet:
+                continue
+            label = str(raw.get("label") or raw.get("name") or pet).strip() or pet
+            codex_session = str(raw.get("codexSession", raw.get("session", "off"))).strip() or "off"
+            entry: dict[str, object] = {
+                "id": str(raw.get("id") or f"companion-{index}").strip() or f"companion-{index}",
+                "label": label,
+                "pet": pet,
+                "codex_session": codex_session,
+            }
+            for key in ("scale", "speed"):
+                if raw.get(key) is None:
+                    continue
+                try:
+                    number = float(raw[key])
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(number) and number > 0:
+                    entry[key] = number
+            entries.append(entry)
+        return entries
+
+    def companion_pet_arg(self, pet: object) -> str:
+        pet_text = str(pet or "").strip()
+        if not pet_text:
+            return ""
+        pet_path = Path(pet_text).expanduser()
+        if pet_path.is_absolute():
+            return str(pet_path)
+        if "/" in pet_text:
+            return str((self.repo_root / pet_path).resolve())
+        return pet_text
+
+    def companion_manifest_path(self, pet: object) -> Path | None:
+        pet_arg = self.companion_pet_arg(pet)
+        if not pet_arg:
+            return None
+        direct = Path(pet_arg)
+        if direct.exists() and (direct / "pet.json").exists():
+            return direct / "pet.json"
+        bundled = DEFAULT_PETS_DIR / pet_arg / "pet.json"
+        if bundled.exists():
+            return bundled
+        return None
+
+    def spawn_companion(self, entry: dict[str, object]) -> None:
+        pet_arg = self.companion_pet_arg(entry.get("pet"))
+        label = str(entry.get("label") or pet_arg or "Companion")
+        if not pet_arg or self.companion_manifest_path(pet_arg) is None:
+            self.set_work_status(
+                "Companion unavailable",
+                f"Could not find the pet pack for {label}.",
+                active=False,
+                hold=True,
+            )
+            return
+
+        args = [str(self.repo_root / "run.py"), "run", pet_arg]
+        scale = entry.get("scale", self.scale)
+        speed = entry.get("speed", self.speed)
+        codex_session = str(entry.get("codex_session") or "off")
+        if scale:
+            args.extend(["--scale", f"{float(scale):g}"])
+        if speed:
+            args.extend(["--speed", f"{float(speed):g}"])
+        args.extend(["--codex-session", codex_session])
+
+        log_dir = self.pet_dir / "runtime-companions"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            log_path = log_dir / f"{str(entry.get('id') or 'companion')}-{stamp}.log"
+            with log_path.open("ab") as log_file:
+                subprocess.Popen(
+                    [sys.executable, *args],
+                    cwd=str(self.repo_root),
+                    env=os.environ.copy(),
+                    stdout=log_file,
+                    stderr=log_file,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except OSError as exc:
+            self.set_work_status("Companion failed to launch", str(exc), active=False, hold=True)
+            return
+
+        detail = f"{label} launched with Codex session selector `{codex_session}`."
+        self.set_work_status("Companion launched", detail, active=False, hold=True)
 
     def open_ask_dialog(self) -> None:
         self.open_bubble_reply()
@@ -4545,6 +4654,17 @@ class DesktopPet(QWidget):
             )
             expand_action.triggered.connect(self.toggle_thought_bubble_expanded)
             menu.addAction(expand_action)
+            menu.addSeparator()
+
+        if self.companion_entries:
+            companions_menu = menu.addMenu(self.companion_menu_label)
+            for entry in self.companion_entries:
+                label = str(entry.get("label") or entry.get("pet") or "Companion")
+                companion_action = QAction(f"Spawn {label}", self)
+                companion_action.triggered.connect(
+                    lambda _checked=False, entry=dict(entry): self.spawn_companion(entry)
+                )
+                companions_menu.addAction(companion_action)
             menu.addSeparator()
 
         pet_actions_menu = menu.addMenu("Pet Actions")

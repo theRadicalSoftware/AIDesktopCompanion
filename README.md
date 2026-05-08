@@ -61,6 +61,7 @@ python3 run.py doctor
 - Can stream Claude responses into the thought bubble when configured.
 - Can send and poll Slack messages when configured.
 - Can run guarded GitHub actions such as push and merge/push through local Git/SSH.
+- Can spawn additional companion pets as separate local processes, each with its own pet pack and Codex session selector.
 
 ## Run A Different Pet
 
@@ -77,6 +78,31 @@ The launcher uses `PET=starter-buddy` by default:
 PET=/path/to/my-pet-pack ./launch-companion.sh
 PET=starter-buddy CODEX_SESSION=off ./launch-companion.sh
 ```
+
+## Spawn Companion Pets
+
+Pet manifests can expose a right-click `Companions` submenu. Each entry starts another pet as a detached process, so it keeps its own runtime state, transcripts, work output, and thought bubble:
+
+```json
+{
+  "runtime": {
+    "companions": {
+      "enabled": true,
+      "entries": [
+        {
+          "label": "Pink Sidekick",
+          "pet": "pink-sidekick",
+          "scale": 1.0,
+          "speed": 0.9,
+          "codexSession": "off"
+        }
+      ]
+    }
+  }
+}
+```
+
+Use `codexSession: "off"` for a fresh independent companion that can still run its own Ask Codex and file-drop work. Use an explicit Codex session id or `rollout-*.jsonl` path only when you want that pet to monitor and reply to one known terminal session. Avoid using `current`, `latest`, or `active` for multiple pets unless you intentionally want them to follow the same global selector.
 
 ## Create Your Own Pet
 
