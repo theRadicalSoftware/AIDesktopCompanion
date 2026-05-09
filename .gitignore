@@ -21,3 +21,5 @@ secrets.json
 pets/*/runtime-work/
 pets/*/runtime-slack/
 pets/*/runtime-state.json
+pets/*/runtime-companions/
+pets/*/runtime-codex/

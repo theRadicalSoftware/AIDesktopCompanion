@@ -94,7 +94,15 @@ Pet manifests can expose a right-click `Companions` submenu. Each entry starts a
           "pet": "pink-sidekick",
           "scale": 1.0,
           "speed": 0.9,
-          "codexSession": "off"
+          "codexSession": "terminal",
+          "codexTerminal": {
+            "enabled": true,
+            "title": "Pink Sidekick Codex",
+            "cwd": ".",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "untrusted",
+            "noAltScreen": true
+          }
         }
       ]
     }
@@ -102,7 +110,7 @@ Pet manifests can expose a right-click `Companions` submenu. Each entry starts a
 }
 ```
 
-Use `codexSession: "off"` for a fresh independent companion that can still run its own Ask Codex and file-drop work. Use an explicit Codex session id or `rollout-*.jsonl` path only when you want that pet to monitor and reply to one known terminal session. Avoid using `current`, `latest`, or `active` for multiple pets unless you intentionally want them to follow the same global selector.
+Use `codexSession: "off"` for a fresh independent companion that can still run its own Ask Codex and file-drop work without a visible terminal. Use `codexSession: "terminal"` to open a new Codex terminal and start the spawned pet against a private `pointer:` file under that pet's runtime folder. Use an explicit Codex session id or `rollout-*.jsonl` path only when you want that pet to monitor and reply to one known existing terminal session. Avoid using `current`, `latest`, or `active` for multiple pets unless you intentionally want them to follow the same global selector.
 
 ## Create Your Own Pet
 

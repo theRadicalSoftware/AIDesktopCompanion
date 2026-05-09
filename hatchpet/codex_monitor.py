@@ -170,8 +170,15 @@ class CodexSessionMonitor:
         if selector.lower() in {"off", "none", "disabled", "false", "0"}:
             return None
 
+        if selector.startswith("pointer:"):
+            pointer = Path(selector[len("pointer:") :]).expanduser()
+            return self.resolve_session_pointer_path(pointer)
+
         candidate = Path(selector).expanduser()
         if candidate.is_file():
+            pointer = self.resolve_session_pointer_path(candidate)
+            if pointer is not None:
+                return pointer
             return candidate.resolve()
 
         if selector.lower() in {"active", "selected", "pinned"}:
@@ -209,7 +216,9 @@ class CodexSessionMonitor:
         return self.codex_home / ACTIVE_SESSION_DIR / ACTIVE_SESSION_FILE
 
     def resolve_active_session_path(self) -> Path | None:
-        pointer = self.active_session_pointer_path()
+        return self.resolve_session_pointer_path(self.active_session_pointer_path())
+
+    def resolve_session_pointer_path(self, pointer: Path) -> Path | None:
         if not pointer.is_file():
             return None
         try:
@@ -770,6 +779,27 @@ def write_active_session_pointer(
     resolved_path = session_path.expanduser().resolve()
     monitor = CodexSessionMonitor(selector=str(resolved_path), codex_home=home)
     pointer = monitor.active_session_pointer_path()
+    return write_session_pointer(
+        pointer_path=pointer,
+        codex_home=home,
+        session_path=resolved_path,
+        selector=selector,
+        cwd=cwd,
+    )
+
+
+def write_session_pointer(
+    *,
+    pointer_path: Path,
+    codex_home: Path | None,
+    session_path: Path,
+    selector: str,
+    cwd: Path | None = None,
+) -> Path:
+    home = codex_home or (Path.home() / ".codex")
+    resolved_path = session_path.expanduser().resolve()
+    monitor = CodexSessionMonitor(selector=str(resolved_path), codex_home=home)
+    pointer = pointer_path.expanduser()
     pointer.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "selector": selector,

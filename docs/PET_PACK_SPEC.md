@@ -118,7 +118,15 @@ The starter manifest in `pets/starter-buddy/pet.json` is the best reference. Run
           "pet": "sidekick",
           "scale": 1.0,
           "speed": 0.9,
-          "codexSession": "off"
+          "codexSession": "terminal",
+          "codexTerminal": {
+            "enabled": true,
+            "title": "Sidekick Codex",
+            "cwd": ".",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "untrusted",
+            "noAltScreen": true
+          }
         }
       ]
     }
@@ -126,6 +134,6 @@ The starter manifest in `pets/starter-buddy/pet.json` is the best reference. Run
 }
 ```
 
-Use a separate pet folder for each companion so runtime state and output files do not collide. `codexSession: "off"` is the safe default for independent companion work. Use an explicit session id or rollout path when one companion should watch one known Codex terminal.
+Use a separate pet folder for each companion so runtime state and output files do not collide. `codexSession: "off"` is the safe default for independent companion work without a visible terminal. `codexSession: "terminal"` launches a new Codex terminal and points the spawned pet at a private `pointer:` file under that pet's runtime folder. Use an explicit session id or rollout path when one companion should watch one known existing Codex terminal.
 
 Do not store API keys, Slack tokens, SSH keys, personal user IDs, or private project names in `pet.json`.

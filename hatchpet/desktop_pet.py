@@ -5,6 +5,8 @@ import math
 import os
 import random
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -2626,11 +2628,19 @@ class DesktopPet(QWidget):
                 continue
             label = str(raw.get("label") or raw.get("name") or pet).strip() or pet
             codex_session = str(raw.get("codexSession", raw.get("session", "off"))).strip() or "off"
+            terminal_config = raw.get("codexTerminal", {})
+            if not isinstance(terminal_config, dict):
+                terminal_config = {}
+            launch_terminal = bool(raw.get("launchCodexTerminal", False) or terminal_config.get("enabled", False))
+            if codex_session.lower() in {"on", "terminal", "new", "spawn", "spawn-terminal"}:
+                launch_terminal = True
             entry: dict[str, object] = {
                 "id": str(raw.get("id") or f"companion-{index}").strip() or f"companion-{index}",
                 "label": label,
                 "pet": pet,
-                "codex_session": codex_session,
+                "codex_session": "terminal" if launch_terminal else codex_session,
+                "launch_codex_terminal": launch_terminal,
+                "codex_terminal": terminal_config,
             }
             for key in ("scale", "speed"):
                 if raw.get(key) is None:
@@ -2667,10 +2677,120 @@ class DesktopPet(QWidget):
             return bundled
         return None
 
+    def companion_pointer_path(self, entry: dict[str, object], manifest_path: Path) -> Path:
+        entry_id = str(entry.get("id") or entry.get("pet") or "companion").strip() or "companion"
+        return manifest_path.parent / "runtime-codex" / f"{entry_id}-session.json"
+
+    def companion_terminal_cwd(self, entry: dict[str, object], manifest_path: Path) -> Path:
+        terminal = entry.get("codex_terminal") if isinstance(entry.get("codex_terminal"), dict) else {}
+        raw_cwd = terminal.get("cwd") or entry.get("cwd") or self.default_work_cwd()
+        cwd = Path(str(raw_cwd)).expanduser()
+        if not cwd.is_absolute():
+            cwd = self.repo_root / cwd
+        try:
+            cwd = cwd.resolve()
+        except OSError:
+            cwd = self.repo_root
+        if not cwd.is_dir():
+            return self.repo_root
+        return cwd
+
+    def companion_codex_command(self, entry: dict[str, object], cwd: Path) -> list[str]:
+        terminal = entry.get("codex_terminal") if isinstance(entry.get("codex_terminal"), dict) else {}
+        raw_args = terminal.get("codexArgs")
+        if isinstance(raw_args, list) and raw_args:
+            return [str(part) for part in raw_args]
+
+        codex = (
+            os.environ.get("CODEX_BINARY")
+            or os.environ.get("CODEX_CLI")
+            or os.environ.get("CODEX_CLI_PATH")
+            or shutil.which("codex")
+            or "codex"
+        )
+        sandbox = str(terminal.get("sandbox", "workspace-write")).strip() or "workspace-write"
+        approval = str(terminal.get("approvalPolicy", "untrusted")).strip() or "untrusted"
+        command = [codex, "--cd", str(cwd), "--sandbox", sandbox, "--ask-for-approval", approval]
+        if bool(terminal.get("noAltScreen", True)):
+            command.append("--no-alt-screen")
+        model = str(terminal.get("model", "")).strip()
+        if model:
+            command.extend(["--model", model])
+        profile = str(terminal.get("profile", "")).strip()
+        if profile:
+            command.extend(["--profile", profile])
+        prompt = str(terminal.get("prompt", "")).strip()
+        if prompt:
+            command.append(prompt)
+        return command
+
+    def terminal_launcher_args(self, title: str, command: list[str], terminal_name: str = "auto") -> list[str] | None:
+        candidates = [terminal_name] if terminal_name and terminal_name != "auto" else [
+            "gnome-terminal",
+            "x-terminal-emulator",
+            "kgx",
+            "konsole",
+            "xfce4-terminal",
+            "xterm",
+        ]
+        for candidate in candidates:
+            program = shutil.which(candidate)
+            if not program:
+                continue
+            name = Path(program).name
+            if name == "gnome-terminal":
+                return [program, "--title", title, "--", *command]
+            if name == "kgx":
+                return [program, "--title", title, "--", *command]
+            if name == "konsole":
+                return [program, "--new-tab", "-p", f"tabtitle={title}", "-e", *command]
+            if name == "xfce4-terminal":
+                return [program, "--title", title, "--command", " ".join(shlex.quote(part) for part in command)]
+            if name in {"x-terminal-emulator", "xterm"}:
+                return [program, "-T", title, "-e", *command]
+        return None
+
+    def launch_companion_codex_terminal(
+        self,
+        entry: dict[str, object],
+        *,
+        manifest_path: Path,
+        pointer_path: Path,
+    ) -> tuple[bool, str]:
+        terminal = entry.get("codex_terminal") if isinstance(entry.get("codex_terminal"), dict) else {}
+        cwd = self.companion_terminal_cwd(entry, manifest_path)
+        title = str(terminal.get("title") or f"{entry.get('label') or 'Companion'} Codex").strip()
+        bridge = [
+            sys.executable,
+            "-m",
+            "hatchpet.codex_terminal_bridge",
+            "--pointer",
+            str(pointer_path),
+            "--cwd",
+            str(cwd),
+            "--",
+            *self.companion_codex_command(entry, cwd),
+        ]
+        terminal_args = self.terminal_launcher_args(title, bridge, str(terminal.get("terminal", "auto")))
+        if terminal_args is None:
+            return False, "Could not find a supported terminal emulator."
+        try:
+            subprocess.Popen(
+                terminal_args,
+                cwd=str(self.repo_root),
+                env=os.environ.copy(),
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError as exc:
+            return False, str(exc)
+        return True, f"Opened {title} in {cwd}."
+
     def spawn_companion(self, entry: dict[str, object]) -> None:
         pet_arg = self.companion_pet_arg(entry.get("pet"))
         label = str(entry.get("label") or pet_arg or "Companion")
-        if not pet_arg or self.companion_manifest_path(pet_arg) is None:
+        manifest_path = self.companion_manifest_path(pet_arg)
+        if not pet_arg or manifest_path is None:
             self.set_work_status(
                 "Companion unavailable",
                 f"Could not find the pet pack for {label}.",
@@ -2683,6 +2803,10 @@ class DesktopPet(QWidget):
         scale = entry.get("scale", self.scale)
         speed = entry.get("speed", self.speed)
         codex_session = str(entry.get("codex_session") or "off")
+        pointer_path = None
+        if entry.get("launch_codex_terminal"):
+            pointer_path = self.companion_pointer_path(entry, manifest_path)
+            codex_session = "pointer:" + str(pointer_path)
         if scale:
             args.extend(["--scale", f"{float(scale):g}"])
         if speed:
@@ -2708,7 +2832,25 @@ class DesktopPet(QWidget):
             self.set_work_status("Companion failed to launch", str(exc), active=False, hold=True)
             return
 
+        terminal_detail = ""
+        if pointer_path is not None:
+            ok, terminal_detail = self.launch_companion_codex_terminal(
+                entry,
+                manifest_path=manifest_path,
+                pointer_path=pointer_path,
+            )
+            if not ok:
+                self.set_work_status(
+                    "Companion launched, terminal failed",
+                    f"{label} is running, but Codex terminal launch failed: {terminal_detail}",
+                    active=False,
+                    hold=True,
+                )
+                return
+
         detail = f"{label} launched with Codex session selector `{codex_session}`."
+        if terminal_detail:
+            detail += "\n" + terminal_detail
         self.set_work_status("Companion launched", detail, active=False, hold=True)
 
     def open_ask_dialog(self) -> None:

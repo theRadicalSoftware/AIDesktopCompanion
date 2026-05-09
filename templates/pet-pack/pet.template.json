@@ -194,7 +194,15 @@
           "pet": "sidekick",
           "scale": 1.0,
           "speed": 0.9,
-          "codexSession": "off"
+          "codexSession": "off",
+          "codexTerminal": {
+            "enabled": false,
+            "title": "Sidekick Codex",
+            "cwd": ".",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "untrusted",
+            "noAltScreen": true
+          }
         }
       ]
     }
