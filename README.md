@@ -130,6 +130,40 @@ Useful starting files:
 - `examples/secrets.example.json`: local secret-file shape
 - `examples/slack-contact.example.json`: Slack contact configuration shape
 
+## Codex App Pet Compatibility
+
+AI Desktop Companion uses a richer manifest for Linux desktop behavior, but it can also exchange pets with the official Codex app custom-pet package shape.
+
+Check whether a rich pet can be exported:
+
+```bash
+python3 run.py check-codex-pet starter-buddy
+```
+
+Export the first 9 rows as an official Codex app pet package:
+
+```bash
+python3 run.py export-codex-pet starter-buddy
+```
+
+That writes:
+
+```text
+${CODEX_HOME:-~/.codex}/pets/starter-buddy/
+  pet.json
+  spritesheet.webp
+```
+
+Import or run an official Codex pet package through the richer Linux runtime:
+
+```bash
+python3 run.py import-codex-pet starter-buddy
+python3 run.py run starter-buddy --scale 1.1
+python3 run.py run-codex-pet starter-buddy --scale 1.1
+```
+
+Official exports keep only the Codex app's fixed `8x9` atlas. Extra AI Desktop Companion rows remain part of the native richer runtime format and are not written into the official package.
+
 ## Provider Config
 
 Provider secrets should be environment variables or local ignored config. Do not put keys in `pet.json`.

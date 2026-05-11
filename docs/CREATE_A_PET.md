@@ -68,6 +68,17 @@ PET=pets/my-pet ./launch-companion.sh
 python3 -m json.tool pets/my-pet/pet.json >/dev/null
 python3 -m compileall hatchpet run.py
 python3 run.py doctor
+python3 run.py check-codex-pet pets/my-pet
 ```
 
 Then visually inspect the pet while it switches between idle, work, reply, and attention animations. If it appears to grow or shrink, inspect the row bounding boxes and normalize the row source before importing again.
+
+## Export For Codex App
+
+If the pet should also be installable by the official Codex app, export the first 9 rows into the minimal Codex package:
+
+```bash
+python3 run.py export-codex-pet pets/my-pet
+```
+
+The export writes to `${CODEX_HOME:-~/.codex}/pets/<pet-id>/` unless `--output-dir` is provided. The richer native manifest and extra animation rows stay in the AI Desktop Companion pet folder.

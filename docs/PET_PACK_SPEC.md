@@ -84,6 +84,40 @@ When generating rows with the current OpenAI `hatch-pet` skill, keep the row mea
 - `running-right` and `running-left` are directional travel loops.
 - `running` is non-directional active work, as if the pet is busy running a task. Do not make it literal foot-running, jogging, sprinting, or travel.
 
+## Official Codex App Package
+
+The official Codex app custom-pet package is intentionally smaller than this runtime's native pet pack:
+
+```text
+${CODEX_HOME:-~/.codex}/pets/<pet-id>/
+  pet.json
+  spritesheet.webp
+```
+
+The official manifest shape is:
+
+```json
+{
+  "id": "pet-id",
+  "displayName": "Pet Name",
+  "description": "One short sentence.",
+  "spritesheetPath": "spritesheet.webp"
+}
+```
+
+The official atlas is always `1536x1872`: 8 columns, 9 rows, `192x208` cells. The rows are the required rows above in order: `idle`, `running-right`, `running-left`, `waving`, `jumping`, `failed`, `waiting`, `running`, and `review`. Unused cells after each row's official frame count must be fully transparent.
+
+AI Desktop Companion keeps its richer manifest as the native format. Use the compatibility commands to bridge between the two:
+
+```bash
+python3 run.py check-codex-pet <pet-id-or-path>
+python3 run.py export-codex-pet <rich-pet-id-or-path>
+python3 run.py import-codex-pet <official-pet-id-or-path>
+python3 run.py run-codex-pet <official-pet-id-or-path>
+```
+
+`export-codex-pet` crops the native sprite to the first 9 rows, clears official unused cells, writes `spritesheet.webp`, and writes the minimal official `pet.json`. Extra rows such as `phone-reply`, `github-action`, `slack-message`, glider, ceiling, usage-meter, or sleep rows remain native AI Desktop Companion extensions.
+
 ## Scale Rule
 
 For normal full-body rows, keep the visible character around `198px` tall inside each `192x208` cell, bottom-aligned with about `5px` of bottom padding.
