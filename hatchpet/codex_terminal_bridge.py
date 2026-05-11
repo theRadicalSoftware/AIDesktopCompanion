@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .codex_monitor import write_session_pointer, write_terminal_pointer_state
+from .worktree_tasks import WorktreeTaskError, update_worktree_task
 
 
 def rollout_files(codex_home: Path) -> list[Path]:
@@ -144,6 +145,18 @@ def run_bridge(args: argparse.Namespace) -> int:
         terminal_state="running",
         terminal_pid=process.pid,
     )
+    if args.worktree_task_id:
+        update_task_state(
+            args.worktree_task_id,
+            codex_home=codex_home,
+            pointer_path=pointer,
+            cwd=cwd,
+            owner_id=args.owner_id,
+            owner_label=args.owner_label,
+            terminal_state="running",
+            terminal_pid=process.pid,
+            status="terminal-running",
+        )
 
     try:
         while process.poll() is None and not stop_requested:
@@ -161,6 +174,19 @@ def run_bridge(args: argparse.Namespace) -> int:
                     terminal_state="running",
                     terminal_pid=process.pid,
                 )
+                if args.worktree_task_id:
+                    update_task_state(
+                        args.worktree_task_id,
+                        codex_home=codex_home,
+                        pointer_path=pointer,
+                        cwd=cwd,
+                        owner_id=args.owner_id,
+                        owner_label=args.owner_label,
+                        terminal_state="running",
+                        terminal_pid=process.pid,
+                        status="linked",
+                        session_path=candidate,
+                    )
                 print(f"Linked companion to Codex rollout: {candidate}", flush=True)
             time.sleep(max(0.5, float(args.poll_seconds)))
     finally:
@@ -187,6 +213,20 @@ def run_bridge(args: argparse.Namespace) -> int:
                 terminal_exit_code=exit_code,
                 terminal_closed_at=time.time(),
             )
+            if args.worktree_task_id:
+                update_task_state(
+                    args.worktree_task_id,
+                    codex_home=codex_home,
+                    pointer_path=pointer,
+                    cwd=cwd,
+                    owner_id=args.owner_id,
+                    owner_label=args.owner_label,
+                    terminal_state="closed",
+                    terminal_pid=process.pid,
+                    terminal_exit_code=exit_code,
+                    status="terminal-closed",
+                    session_path=linked,
+                )
         else:
             write_terminal_pointer_state(
                 pointer_path=pointer,
@@ -200,8 +240,59 @@ def run_bridge(args: argparse.Namespace) -> int:
                 terminal_exit_code=exit_code,
                 terminal_closed_at=time.time(),
             )
-
+            if args.worktree_task_id:
+                update_task_state(
+                    args.worktree_task_id,
+                    codex_home=codex_home,
+                    pointer_path=pointer,
+                    cwd=cwd,
+                    owner_id=args.owner_id,
+                    owner_label=args.owner_label,
+                    terminal_state="closed",
+                    terminal_pid=process.pid,
+                    terminal_exit_code=exit_code,
+                    status="terminal-closed",
+                )
     return int(process.returncode or 0)
+
+
+def update_task_state(
+    task_id: str,
+    *,
+    codex_home: Path,
+    pointer_path: Path,
+    cwd: Path,
+    owner_id: str | None,
+    owner_label: str | None,
+    terminal_state: str,
+    terminal_pid: int | None,
+    status: str,
+    session_path: Path | None = None,
+    terminal_exit_code: int | None = None,
+) -> None:
+    updates: dict[str, Any] = {
+        "pointer_path": pointer_path,
+        "terminal_state": terminal_state,
+        "terminal_pid": terminal_pid,
+        "status": status,
+        "owner_id": owner_id or "",
+        "owner_label": owner_label or "",
+    }
+    if session_path is not None:
+        updates["rollout_path"] = session_path
+        try:
+            from .codex_monitor import CodexSessionMonitor
+
+            monitor = CodexSessionMonitor(selector=str(session_path), codex_home=codex_home)
+            updates["session_id"] = monitor.session_id_from_path(session_path)
+        except Exception:
+            pass
+    if terminal_exit_code is not None:
+        updates["terminal_exit_code"] = int(terminal_exit_code)
+    try:
+        update_worktree_task(task_id, codex_home=codex_home, **updates)
+    except WorktreeTaskError:
+        return
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -211,6 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
     parser.add_argument("--owner-id", help="Pet id that owns the spawned terminal session.")
     parser.add_argument("--owner-label", help="Display name for the pet that owns the session.")
+    parser.add_argument("--worktree-task-id", help="Optional worktree task id linked to this terminal.")
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to run after --. Defaults to codex.")
     return parser

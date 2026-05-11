@@ -411,6 +411,13 @@ def default_rich_runtime() -> dict[str, Any]:
             "outputDir": "runtime-work",
             "statusHoldSeconds": 28,
         },
+        "worktreeTasks": {
+            "enabled": True,
+            "baseRef": "HEAD",
+            "companionId": "",
+            "terminal": "auto",
+            "terminalTitlePrefix": "Codex Worktree",
+        },
     }
 
 

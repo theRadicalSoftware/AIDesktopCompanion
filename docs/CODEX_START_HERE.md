@@ -21,6 +21,7 @@ Requirements:
 - Add optional provider rows only when useful: codex-attention, phone-reply, github-action, slack-message, slack-send, file-review, file-receive, file-inspect, prompting.
 - Update pet.json so the runtime uses the new rows and sensible fallbacks.
 - If you create a second pet, configure runtime.companions with codexSession "off" for isolated pet work, "terminal" for a new pet-owned Codex terminal, or an explicit session id/path for a known existing Codex terminal.
+- Leave runtime.worktreeTasks enabled unless the pet should hide Git worktree task controls; set companionId when task work should spawn a specific companion pet.
 - Validate with:
   python3 -m json.tool pets/<pet-id>/pet.json
   python3 -m compileall hatchpet run.py

@@ -6,7 +6,7 @@ Inspired by Codex Pets. Not affiliated with OpenAI. Built as a local Linux-first
 
 Early experimental release. Tested primarily on Pop!_OS/X11. Wayland support is not the focus yet.
 
-The app runs a transparent, always-on-top PyQt6 companion on X11. It can walk around the desktop, react to drag/drop, show Codex session status in an animated thought bubble, accept replies, and run optional provider bridges for Codex, Claude, Slack, and GitHub.
+The app runs a transparent, always-on-top PyQt6 companion on X11. It can walk around the desktop, react to drag/drop, show Codex session status in an animated thought bubble, accept replies, launch worktree-backed Codex task terminals, and run optional provider bridges for Codex, Claude, Slack, and GitHub.
 
 This public repo is the reusable engine and template kit. It intentionally ships with a neutral `starter-buddy` demo pet instead of a personal character pack.
 
@@ -111,6 +111,24 @@ Pet manifests can expose a right-click `Companions` submenu. Each entry starts a
 ```
 
 Use `codexSession: "off"` for a fresh independent companion that can still run its own Ask Codex and file-drop work without a visible terminal. Use `codexSession: "terminal"` to open a new Codex terminal and start the spawned pet against a private `pointer:` file under that pet's runtime folder. Terminal sessions are recorded in `~/.codex/ai-desktop-companion/session-owners.json`, so pets using broad `current` or `latest` selectors skip sessions owned by another pet. A terminal-scoped pet can set `runtime.codexBubble.exitOnTerminalClose` to `true` to disappear when its owned Codex terminal closes. Use an explicit Codex session id or `rollout-*.jsonl` path only when you want that pet to monitor and reply to one known existing terminal session.
+
+## Worktree-Backed Tasks
+
+Right-click a running companion and choose `Worktree Tasks -> New Worktree Task...` to create a Git worktree from the current repository `HEAD`, launch a Codex terminal in that isolated checkout, and bind the terminal to the pet. If the manifest has companion entries enabled, the first companion can become the visible task owner; otherwise the current pet opens the scoped terminal itself.
+
+Task records live under `~/.codex/ai-desktop-companion/worktree-tasks.json`, with generated checkouts under `~/.codex/worktrees/ai-desktop-companion/` by default. The menu can show task summaries, open task terminals and folders, and remove a task only when its worktree is clean.
+
+CLI equivalents:
+
+```bash
+python3 run.py worktree-task-create "Fix the failing tests" --cwd . --open-terminal
+python3 run.py worktree-task-list
+python3 run.py worktree-task-status <task-id>
+python3 run.py worktree-task-terminal <task-id>
+python3 run.py worktree-task-remove <task-id>
+```
+
+Worktree tasks are detached by default to keep the main checkout clean and avoid checking out the same branch in two places. Use `--branch <name>` at creation time or `worktree-task-branch <task-id> <branch>` when the work should become a normal branch.
 
 ## Create Your Own Pet
 

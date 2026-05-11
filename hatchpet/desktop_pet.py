@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QProcess, QProcessEnvironment, QRect, QRectF, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QTextOption
-from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessageBox, QPushButton, QTextEdit, QWidget
+from PyQt6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton, QTextEdit, QWidget
 
 from .codex_approval import current_codex_action_required, send_codex_terminal_approval
 from .codex_bridge import (
@@ -43,6 +43,18 @@ from .codex_bridge import (
 from .codex_monitor import CodexSessionMonitor, CodexStatus, write_pending_session_owner
 from .codex_usage import CodexUsageMonitor, CodexUsageStatus, UsageWindow
 from .pet_format import DEFAULT_PETS_DIR
+from .worktree_tasks import (
+    WorktreeTask,
+    WorktreeTaskError,
+    create_worktree_task,
+    format_task_report,
+    get_worktree_task,
+    launch_worktree_task_terminal,
+    list_worktree_tasks,
+    remove_worktree_task,
+    summarize_tasks,
+    update_worktree_task,
+)
 
 
 AI_PROVIDER_SLACK = "slack"
@@ -1571,6 +1583,23 @@ class DesktopPet(QWidget):
             companions = {}
         self.companion_menu_label = str(companions.get("menuLabel", "Companions")).strip() or "Companions"
         self.companion_entries = self.parse_companion_entries(companions)
+        worktree_tasks = runtime.get("worktreeTasks", {})
+        if not isinstance(worktree_tasks, dict):
+            worktree_tasks = {}
+        self.worktree_tasks_enabled = bool(worktree_tasks.get("enabled", True))
+        self.worktree_task_base_ref = str(worktree_tasks.get("baseRef", "HEAD")).strip() or "HEAD"
+        self.worktree_task_companion_id = str(worktree_tasks.get("companionId", "")).strip()
+        self.worktree_task_terminal_name = str(worktree_tasks.get("terminal", "auto")).strip() or "auto"
+        self.worktree_task_title_prefix = str(worktree_tasks.get("terminalTitlePrefix", "Codex Worktree")).strip()
+        if not self.worktree_task_title_prefix:
+            self.worktree_task_title_prefix = "Codex Worktree"
+        raw_worktrees_dir = str(worktree_tasks.get("worktreesDir", "")).strip()
+        self.worktree_task_worktrees_dir: Path | None = None
+        if raw_worktrees_dir:
+            worktrees_dir = Path(raw_worktrees_dir).expanduser()
+            if not worktrees_dir.is_absolute():
+                worktrees_dir = self.repo_root / worktrees_dir
+            self.worktree_task_worktrees_dir = worktrees_dir
         providers = runtime.get("aiProviders", {})
         claude_provider = providers.get("claude", {}) if isinstance(providers.get("claude"), dict) else {}
         self.claude_enabled = bool(claude_provider.get("enabled", True))
@@ -2835,9 +2864,11 @@ class DesktopPet(QWidget):
             owner_id,
             "--owner-label",
             owner_label,
-            "--",
-            *self.companion_codex_command(entry, cwd),
         ]
+        worktree_task_id = str(entry.get("worktree_task_id") or terminal.get("worktreeTaskId") or "").strip()
+        if worktree_task_id:
+            bridge.extend(["--worktree-task-id", worktree_task_id])
+        bridge.extend(["--", *self.companion_codex_command(entry, cwd)])
         terminal_args = self.terminal_launcher_args(title, bridge, str(terminal.get("terminal", "auto")))
         if terminal_args is None:
             return False, "Could not find a supported terminal emulator."
@@ -2851,6 +2882,18 @@ class DesktopPet(QWidget):
             )
         except OSError as exc:
             return False, str(exc)
+        if worktree_task_id:
+            try:
+                update_worktree_task(
+                    worktree_task_id,
+                    pointer_path=pointer_path,
+                    owner_id=owner_id,
+                    owner_label=owner_label,
+                    terminal_state="launching",
+                    status="terminal-launching",
+                )
+            except WorktreeTaskError:
+                pass
         return True, f"Opened {title} in {cwd}."
 
     def spawn_companion(self, entry: dict[str, object]) -> None:
@@ -2920,6 +2963,163 @@ class DesktopPet(QWidget):
             detail += "\n" + terminal_detail
         self.push_work_history(detail)
         self.work_status_until = 0.0
+
+    def worktree_task_cwd(self) -> Path:
+        return self.github_work_cwd()
+
+    def selected_worktree_companion_entry(self) -> dict[str, object] | None:
+        if not self.companion_entries:
+            return None
+        if self.worktree_task_companion_id:
+            for entry in self.companion_entries:
+                if str(entry.get("id") or "").strip() == self.worktree_task_companion_id:
+                    return dict(entry)
+        return dict(self.companion_entries[0])
+
+    def prompt_for_worktree_task(self) -> str | None:
+        prompt, ok = QInputDialog.getMultiLineText(
+            self,
+            "New Worktree Task",
+            "Task prompt for Codex:",
+            "",
+        )
+        if not ok:
+            return None
+        return str(prompt or "").strip()
+
+    def start_worktree_task(self) -> None:
+        if not self.worktree_tasks_enabled:
+            self.set_work_status(
+                "Worktree tasks disabled",
+                "Enable runtime.worktreeTasks in the pet manifest to use worktree-backed tasks.",
+                active=False,
+                hold=True,
+            )
+            return
+        prompt = self.prompt_for_worktree_task()
+        if prompt is None:
+            return
+        cwd = self.worktree_task_cwd()
+        label = " ".join(prompt.split())[:72].rstrip() if prompt else f"Codex task from {cwd.name}"
+        try:
+            task = create_worktree_task(
+                cwd=cwd,
+                label=label,
+                prompt=prompt,
+                base_ref=self.worktree_task_base_ref,
+                owner_id=self.pet_id,
+                owner_label=self.pet_name,
+                worktrees_root=self.worktree_task_worktrees_dir,
+            )
+        except WorktreeTaskError as exc:
+            self.set_work_status("Worktree task blocked", str(exc), active=False, hold=True)
+            return
+
+        companion_entry = self.selected_worktree_companion_entry()
+        if companion_entry is not None:
+            self.spawn_worktree_task_companion(task, companion_entry)
+        else:
+            self.launch_worktree_task_terminal_for_current_pet(task, prompt=prompt)
+
+    def spawn_worktree_task_companion(self, task: WorktreeTask, entry: dict[str, object]) -> None:
+        terminal = dict(entry.get("codex_terminal") if isinstance(entry.get("codex_terminal"), dict) else {})
+        title_suffix = task.task_id[:11]
+        terminal.update(
+            {
+                "enabled": True,
+                "cwd": str(task.worktree_path),
+                "title": f"{self.worktree_task_title_prefix} {title_suffix}",
+                "sandbox": terminal.get("sandbox", "workspace-write"),
+                "approvalPolicy": terminal.get("approvalPolicy", "untrusted"),
+                "prompt": task.prompt,
+                "worktreeTaskId": task.task_id,
+                "terminal": terminal.get("terminal", self.worktree_task_terminal_name),
+            }
+        )
+        label = str(entry.get("label") or entry.get("pet") or "Companion")
+        dynamic_entry = {
+            **entry,
+            "id": f"worktree-{task.task_id}",
+            "label": f"{label} - {title_suffix}",
+            "codex_session": "terminal",
+            "launch_codex_terminal": True,
+            "codex_terminal": terminal,
+            "worktree_task_id": task.task_id,
+        }
+        self.spawn_companion(dynamic_entry)
+        detail = f"Created {task.task_id} at {task.worktree_path}."
+        if task.local_dirty_at_create:
+            detail += "\nLocal checkout had uncommitted changes; the worktree starts from committed HEAD."
+        self.set_work_status("Worktree task launched", detail, active=False, hold=True)
+
+    def launch_worktree_task_terminal_for_current_pet(self, task: WorktreeTask, *, prompt: str = "") -> None:
+        ok, detail = launch_worktree_task_terminal(
+            task,
+            owner_id=self.pet_id,
+            owner_label=self.pet_name,
+            terminal_name=self.worktree_task_terminal_name,
+            title=f"{self.worktree_task_title_prefix} {task.task_id[:11]}",
+            prompt=prompt,
+        )
+        if ok:
+            if task.local_dirty_at_create:
+                detail += "\nLocal checkout had uncommitted changes; the worktree starts from committed HEAD."
+            self.push_work_history(detail)
+            self.set_work_status("Worktree task launched", detail, active=False, hold=True)
+            return
+        self.set_work_status("Worktree terminal failed", detail, active=False, hold=True)
+
+    def show_worktree_task_summary(self) -> None:
+        try:
+            tasks = list_worktree_tasks()
+            detail = summarize_tasks(tasks, limit=8)
+        except WorktreeTaskError as exc:
+            detail = str(exc)
+        self.set_work_status("Worktree tasks", detail, active=False, hold=True)
+
+    def show_worktree_task_status(self, task_id: str) -> None:
+        try:
+            task = get_worktree_task(task_id)
+            detail = format_task_report(task)
+        except WorktreeTaskError as exc:
+            detail = str(exc)
+        self.set_work_status("Worktree task status", detail, active=False, hold=True)
+
+    def open_worktree_task_terminal(self, task_id: str) -> None:
+        try:
+            task = get_worktree_task(task_id)
+        except WorktreeTaskError as exc:
+            self.set_work_status("Worktree task missing", str(exc), active=False, hold=True)
+            return
+        self.launch_worktree_task_terminal_for_current_pet(task)
+
+    def open_worktree_task_folder(self, task_id: str) -> None:
+        try:
+            task = get_worktree_task(task_id)
+        except WorktreeTaskError as exc:
+            self.set_work_status("Worktree task missing", str(exc), active=False, hold=True)
+            return
+        result = QProcess.startDetached("xdg-open", [str(task.worktree_path)])
+        started = result[0] if isinstance(result, tuple) else bool(result)
+        if not started:
+            self.set_work_status("Worktree folder", str(task.worktree_path), active=False, hold=True)
+
+    def remove_clean_worktree_task(self, task_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Remove Worktree Task",
+            "Remove this worktree task if it has no uncommitted changes?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            task = remove_worktree_task(task_id)
+        except WorktreeTaskError as exc:
+            self.set_work_status("Worktree cleanup blocked", str(exc), active=False, hold=True)
+            return
+        self.set_work_status("Worktree task removed", task.task_id, active=False, hold=True)
 
     def open_ask_dialog(self) -> None:
         self.open_bubble_reply()
@@ -4839,6 +5039,52 @@ class DesktopPet(QWidget):
                 publish_main_action = QAction(f"Merge Current Branch Into {self.github_main_branch}, Then Push", self)
                 publish_main_action.triggered.connect(lambda: self.start_github_action("merge_to_main"))
                 github_menu.addAction(publish_main_action)
+
+            if self.worktree_tasks_enabled:
+                worktree_menu = menu.addMenu("Worktree Tasks")
+                new_worktree_action = QAction("New Worktree Task...", self)
+                new_worktree_action.triggered.connect(self.start_worktree_task)
+                worktree_menu.addAction(new_worktree_action)
+
+                summary_action = QAction("Show Task Summary", self)
+                summary_action.triggered.connect(self.show_worktree_task_summary)
+                worktree_menu.addAction(summary_action)
+
+                try:
+                    tasks = list_worktree_tasks()
+                except WorktreeTaskError:
+                    tasks = []
+                if tasks:
+                    worktree_menu.addSeparator()
+                    for task in tasks[:5]:
+                        task_label = task.label or task.task_id
+                        if len(task_label) > 34:
+                            task_label = task_label[:31].rstrip() + "..."
+                        task_menu = worktree_menu.addMenu(task_label)
+
+                        status_action = QAction("Show Status", self)
+                        status_action.triggered.connect(
+                            lambda _checked=False, task_id=task.task_id: self.show_worktree_task_status(task_id)
+                        )
+                        task_menu.addAction(status_action)
+
+                        terminal_action = QAction("Open Terminal", self)
+                        terminal_action.triggered.connect(
+                            lambda _checked=False, task_id=task.task_id: self.open_worktree_task_terminal(task_id)
+                        )
+                        task_menu.addAction(terminal_action)
+
+                        folder_action = QAction("Open Folder", self)
+                        folder_action.triggered.connect(
+                            lambda _checked=False, task_id=task.task_id: self.open_worktree_task_folder(task_id)
+                        )
+                        task_menu.addAction(folder_action)
+
+                        remove_action = QAction("Remove If Clean", self)
+                        remove_action.triggered.connect(
+                            lambda _checked=False, task_id=task.task_id: self.remove_clean_worktree_task(task_id)
+                        )
+                        task_menu.addAction(remove_action)
 
             if self.work_process is not None:
                 stop_label = "Stop Work"

@@ -17,6 +17,18 @@ from .codex_pet_compat import (
 )
 from .import_sheet import import_action_sheet, import_idle_pickup_sheet, import_named_row_sheet, import_pose_sheet
 from .pet_format import DEFAULT_PETS_DIR, pet_paths
+from .worktree_tasks import (
+    WorktreeTaskError,
+    branch_worktree_task,
+    create_worktree_task,
+    format_task_report,
+    get_worktree_task,
+    launch_worktree_task_terminal,
+    list_worktree_tasks,
+    remove_worktree_task,
+    summarize_tasks,
+    task_status_report,
+)
 
 
 def existing_pet_dir(pets_dir: Path, pet: str) -> Path:
@@ -153,6 +165,95 @@ def cmd_run_codex_pet(args: argparse.Namespace) -> int:
     )
     print(f"Running imported Codex pet {target}", flush=True)
     return run_pet(target, scale=args.scale, speed=args.speed, codex_session=args.codex_session)
+
+
+def cli_codex_home(value: str | None) -> Path | None:
+    return Path(value).expanduser().resolve() if value else None
+
+
+def cmd_worktree_task_create(args: argparse.Namespace) -> int:
+    codex_home = cli_codex_home(args.codex_home)
+    task = create_worktree_task(
+        cwd=Path(args.cwd).expanduser().resolve(),
+        label=args.label or args.prompt,
+        prompt=args.prompt,
+        base_ref=args.base_ref,
+        branch=args.branch,
+        owner_id=args.owner_id,
+        owner_label=args.owner_label,
+        codex_home=codex_home,
+        worktrees_root=Path(args.worktrees_dir).expanduser().resolve() if args.worktrees_dir else None,
+    )
+    if args.open_terminal:
+        ok, detail = launch_worktree_task_terminal(
+            task,
+            owner_id=args.owner_id,
+            owner_label=args.owner_label,
+            codex_home=codex_home,
+            terminal_name=args.terminal,
+            title=args.title,
+            prompt=args.prompt,
+        )
+        if not ok:
+            raise WorktreeTaskError(detail)
+        task = get_worktree_task(task.task_id, codex_home=codex_home)
+    if args.json:
+        print(json.dumps(task_status_report(task), indent=2))
+    else:
+        print(f"Created worktree task: {task.task_id}")
+        print(f"Worktree: {task.worktree_path}")
+        if task.local_dirty_at_create:
+            print("Warning: local checkout had uncommitted changes; the worktree starts from committed HEAD.")
+    return 0
+
+
+def cmd_worktree_task_list(args: argparse.Namespace) -> int:
+    codex_home = cli_codex_home(args.codex_home)
+    tasks = list_worktree_tasks(codex_home=codex_home, include_removed=args.all)
+    if args.json:
+        print(json.dumps([task_status_report(task) for task in tasks], indent=2))
+    else:
+        print(summarize_tasks(tasks, limit=args.limit))
+    return 0
+
+
+def cmd_worktree_task_status(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    if args.json:
+        print(json.dumps(task_status_report(task), indent=2))
+    else:
+        print(format_task_report(task))
+    return 0
+
+
+def cmd_worktree_task_terminal(args: argparse.Namespace) -> int:
+    codex_home = cli_codex_home(args.codex_home)
+    task = get_worktree_task(args.task_id, codex_home=codex_home)
+    ok, detail = launch_worktree_task_terminal(
+        task,
+        owner_id=args.owner_id,
+        owner_label=args.owner_label,
+        codex_home=codex_home,
+        terminal_name=args.terminal,
+        title=args.title,
+        prompt=args.prompt,
+    )
+    if not ok:
+        raise WorktreeTaskError(detail)
+    print(detail)
+    return 0
+
+
+def cmd_worktree_task_branch(args: argparse.Namespace) -> int:
+    task = branch_worktree_task(args.task_id, args.branch, codex_home=cli_codex_home(args.codex_home))
+    print(format_task_report(task))
+    return 0
+
+
+def cmd_worktree_task_remove(args: argparse.Namespace) -> int:
+    task = remove_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home), force=args.force)
+    print(f"Removed worktree task: {task.task_id}")
+    return 0
 
 
 def cmd_import_sheet(args: argparse.Namespace) -> int:
@@ -349,6 +450,60 @@ def build_parser() -> argparse.ArgumentParser:
     run_codex.add_argument("--speed", type=float, help="Horizontal walking speed in pixels per tick.")
     run_codex.add_argument("--codex-session", help="Codex status selector for the thought bubble.")
     run_codex.set_defaults(func=cmd_run_codex_pet)
+
+    wt_create = subparsers.add_parser(
+        "worktree-task-create",
+        help="Create a Git worktree-backed Codex task.",
+    )
+    wt_create.add_argument("prompt", nargs="?", default="", help="Optional prompt to start in the Codex terminal.")
+    wt_create.add_argument("--cwd", default=".", help="Git repository path. Defaults to the current directory.")
+    wt_create.add_argument("--label", help="Task label. Defaults to the prompt or current ref.")
+    wt_create.add_argument("--base-ref", default="HEAD", help="Git ref to base the worktree on. Defaults to HEAD.")
+    wt_create.add_argument("--branch", default="", help="Create the worktree on a new branch instead of detached HEAD.")
+    wt_create.add_argument("--owner-id", default="", help="Pet id that owns this task.")
+    wt_create.add_argument("--owner-label", default="", help="Display label for the owning pet.")
+    wt_create.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_create.add_argument("--worktrees-dir", help="Override the directory used to store generated worktrees.")
+    wt_create.add_argument("--open-terminal", action="store_true", help="Launch a Codex terminal scoped to the new worktree.")
+    wt_create.add_argument("--terminal", default="auto", help="Terminal emulator to use when opening a terminal.")
+    wt_create.add_argument("--title", default="", help="Terminal title when --open-terminal is used.")
+    wt_create.add_argument("--json", action="store_true", help="Print a machine-readable task report.")
+    wt_create.set_defaults(func=cmd_worktree_task_create)
+
+    wt_list = subparsers.add_parser("worktree-task-list", help="List worktree-backed Codex tasks.")
+    wt_list.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_list.add_argument("--all", action="store_true", help="Include removed tasks.")
+    wt_list.add_argument("--limit", type=int, default=8, help="Maximum text rows to show in summary mode.")
+    wt_list.add_argument("--json", action="store_true", help="Print machine-readable task reports.")
+    wt_list.set_defaults(func=cmd_worktree_task_list)
+
+    wt_status = subparsers.add_parser("worktree-task-status", help="Show one worktree task's status and diff summary.")
+    wt_status.add_argument("task_id", help="Worktree task id.")
+    wt_status.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_status.add_argument("--json", action="store_true", help="Print a machine-readable task report.")
+    wt_status.set_defaults(func=cmd_worktree_task_status)
+
+    wt_terminal = subparsers.add_parser("worktree-task-terminal", help="Open a Codex terminal for an existing worktree task.")
+    wt_terminal.add_argument("task_id", help="Worktree task id.")
+    wt_terminal.add_argument("prompt", nargs="?", default="", help="Optional prompt to start in the Codex terminal.")
+    wt_terminal.add_argument("--owner-id", default="", help="Pet id that owns this terminal.")
+    wt_terminal.add_argument("--owner-label", default="", help="Display label for the owning pet.")
+    wt_terminal.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_terminal.add_argument("--terminal", default="auto", help="Terminal emulator to use.")
+    wt_terminal.add_argument("--title", default="", help="Terminal title.")
+    wt_terminal.set_defaults(func=cmd_worktree_task_terminal)
+
+    wt_branch = subparsers.add_parser("worktree-task-branch", help="Create a branch in an existing detached task worktree.")
+    wt_branch.add_argument("task_id", help="Worktree task id.")
+    wt_branch.add_argument("branch", help="New branch name.")
+    wt_branch.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_branch.set_defaults(func=cmd_worktree_task_branch)
+
+    wt_remove = subparsers.add_parser("worktree-task-remove", help="Remove a worktree task if it is clean.")
+    wt_remove.add_argument("task_id", help="Worktree task id.")
+    wt_remove.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_remove.add_argument("--force", action="store_true", help="Force removal even when the worktree has changes.")
+    wt_remove.set_defaults(func=cmd_worktree_task_remove)
 
     import_sheet = subparsers.add_parser("import-sheet", help="Import generated pose-sheet rows into a pet atlas.")
     import_sheet.add_argument("pet", help="Pet id or path to a pet folder.")

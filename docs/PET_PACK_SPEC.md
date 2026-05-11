@@ -141,7 +141,8 @@ The starter manifest in `pets/starter-buddy/pet.json` is the best reference. Run
     "codexUsage": {},
     "aiProviders": {},
     "workDrop": {},
-    "companions": {}
+    "companions": {},
+    "worktreeTasks": {}
   }
 }
 ```
@@ -178,5 +179,24 @@ The starter manifest in `pets/starter-buddy/pet.json` is the best reference. Run
 ```
 
 Use a separate pet folder for each companion so runtime state and output files do not collide. `codexSession: "off"` is the safe default for independent companion work without a visible terminal. `codexSession: "terminal"` launches a new Codex terminal and points the spawned pet at a private `pointer:` file under that pet's runtime folder. Use an explicit session id or rollout path when one companion should watch one known existing Codex terminal.
+
+`runtime.worktreeTasks` enables Codex task terminals backed by Git worktrees:
+
+```json
+{
+  "runtime": {
+    "worktreeTasks": {
+      "enabled": true,
+      "baseRef": "HEAD",
+      "companionId": "",
+      "terminal": "auto",
+      "terminalTitlePrefix": "Codex Worktree",
+      "worktreesDir": ""
+    }
+  }
+}
+```
+
+The default creates detached worktrees under `~/.codex/worktrees/ai-desktop-companion/`, records task state in `~/.codex/ai-desktop-companion/worktree-tasks.json`, and launches Codex with `workspace-write` plus `untrusted` approvals inside the generated checkout. Set `companionId` to one of the configured companion entries when worktree tasks should spawn a companion pet as the visible task owner.
 
 Do not store API keys, Slack tokens, SSH keys, personal user IDs, or private project names in `pet.json`.

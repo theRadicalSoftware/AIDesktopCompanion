@@ -206,6 +206,13 @@
           }
         }
       ]
+    },
+    "worktreeTasks": {
+      "enabled": true,
+      "baseRef": "HEAD",
+      "companionId": "",
+      "terminal": "auto",
+      "terminalTitlePrefix": "Codex Worktree"
     }
   },
   "hatch": {
