@@ -305,10 +305,11 @@ def make_frame(source_cell: Image.Image, row_name: str, frame_index: int) -> Ima
         return transform_frame(
             source_cell,
             frame_index,
-            dx=int(round(math.sin(phase) * 3)),
-            dy=abs(int(round(math.sin(phase) * 5))) - 3,
-            rotation=math.sin(phase) * 5,
-            color_boost=0.1,
+            dy=int(round(math.sin(phase * 2) * 2)),
+            scale_x=1.0 + 0.012 * math.sin(phase * 2),
+            scale_y=1.0 - 0.012 * math.sin(phase * 2),
+            rotation=math.sin(phase * 2) * 2,
+            color_boost=0.16,
         )
 
     if row_name == "review":

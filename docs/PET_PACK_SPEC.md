@@ -39,6 +39,7 @@ Every usable pet should include:
 | `jumping` | Manual menu action and double-click action |
 | `failed` | Error or hard failure pose |
 | `waiting` | Waiting/thinking fallback |
+| `running` | Busy work/in-progress loop |
 | `review` | Work/review fallback |
 
 Recommended aliases:
@@ -74,6 +75,14 @@ These rows make provider integrations feel polished:
 | `ceiling-grab`, `ceiling-hold`, `ceiling-release` | Optional ceiling hang |
 
 The runtime has fallbacks, so a first custom pet can start with the required rows and add capability rows later.
+
+## Hatch-Pet Row Semantics
+
+When generating rows with the current OpenAI `hatch-pet` skill, keep the row meanings distinct:
+
+- `idle` should stay calm and low-distraction: subtle breathing, blink, or head/body bob only.
+- `running-right` and `running-left` are directional travel loops.
+- `running` is non-directional active work, as if the pet is busy running a task. Do not make it literal foot-running, jogging, sprinting, or travel.
 
 ## Scale Rule
 
