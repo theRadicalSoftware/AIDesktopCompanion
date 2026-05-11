@@ -15,6 +15,22 @@ UUID_RE = re.compile(
 
 ACTIVE_SESSION_DIR = "ai-desktop-companion"
 ACTIVE_SESSION_FILE = "active-session.json"
+SESSION_OWNERS_FILE = "session-owners.json"
+
+
+def clean_owner_id(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def clean_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.expanduser().resolve() == right.expanduser().resolve()
+    except OSError:
+        return left.expanduser() == right.expanduser()
 
 
 @dataclass
@@ -38,13 +54,18 @@ class CodexSessionMonitor:
         *,
         selector: str = "latest",
         codex_home: Path | None = None,
-        tail_bytes: int = 256_000,
+        tail_bytes: int = 2_000_000,
+        owner_id: str | None = None,
+        exclude_foreign_owned: bool = True,
     ) -> None:
         self.selector = selector
         self.codex_home = codex_home or (Path.home() / ".codex")
         self.tail_bytes = tail_bytes
+        self.owner_id = clean_owner_id(owner_id)
+        self.exclude_foreign_owned = exclude_foreign_owned
         self.session_path: Path | None = None
         self.offset = 0
+        self.discard_partial_line = False
         self.status_text = "Watching Codex"
         self.active = False
         self.current_turn_id: str | None = None
@@ -74,6 +95,7 @@ class CodexSessionMonitor:
         if path != self.session_path:
             self.session_path = path
             self.offset = max(0, path.stat().st_size - self.tail_bytes)
+            self.discard_partial_line = self.offset > 0
             self.status_text = "Linked to Codex"
             self.active = False
             self.awaiting_user = False
@@ -90,8 +112,9 @@ class CodexSessionMonitor:
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(self.offset)
-                if self.offset:
+                if self.discard_partial_line:
                     handle.readline()
+                    self.discard_partial_line = False
                 lines = handle.readlines()
                 self.offset = handle.tell()
         except OSError:
@@ -194,22 +217,35 @@ class CodexSessionMonitor:
         if selector.lower() == "current":
             current = self.current_session_id_from_history()
             if current:
-                matches = list(sessions_root.rglob(f"rollout-*{current}.jsonl"))
-                if matches:
-                    return max(matches, key=lambda path: path.stat().st_mtime).resolve()
+                path = self.session_path_for_id(current)
+                if path is not None:
+                    return path
             return None
 
         if selector.lower() in {"latest", "auto"}:
-            files = [path for path in sessions_root.rglob("rollout-*.jsonl") if path.is_file()]
+            files = [
+                path
+                for path in sessions_root.rglob("rollout-*.jsonl")
+                if path.is_file() and not self.session_is_foreign_owned(session_path=path)
+            ]
             if not files:
                 return None
             return max(files, key=lambda path: path.stat().st_mtime).resolve()
 
         if UUID_RE.match(selector):
-            matches = list(sessions_root.rglob(f"rollout-*{selector}.jsonl"))
-            if matches:
-                return max(matches, key=lambda path: path.stat().st_mtime).resolve()
+            path = self.session_path_for_id(selector)
+            if path is not None:
+                return path
 
+        return None
+
+    def session_path_for_id(self, session_id: str) -> Path | None:
+        if not UUID_RE.match(session_id):
+            return None
+        sessions_root = self.codex_home / "sessions"
+        matches = list(sessions_root.rglob(f"rollout-*{session_id}.jsonl")) if sessions_root.exists() else []
+        if matches:
+            return max(matches, key=lambda path: path.stat().st_mtime).resolve()
         return None
 
     def active_session_pointer_path(self) -> Path:
@@ -241,6 +277,138 @@ class CodexSessionMonitor:
             if matches:
                 return max(matches, key=lambda path: path.stat().st_mtime).resolve()
         return None
+
+    def session_owners_path(self) -> Path:
+        return self.codex_home / ACTIVE_SESSION_DIR / SESSION_OWNERS_FILE
+
+    def load_session_owner_registry(self) -> dict[str, Any]:
+        path = self.session_owners_path()
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return data
+
+    def load_session_owners(self) -> dict[str, dict[str, Any]]:
+        data = self.load_session_owner_registry()
+        sessions = data.get("sessions")
+        if not isinstance(sessions, dict):
+            return {}
+        return {key: value for key, value in sessions.items() if isinstance(key, str) and isinstance(value, dict)}
+
+    def load_pending_session_owners(self) -> list[dict[str, Any]]:
+        data = self.load_session_owner_registry()
+        pending = data.get("pending")
+        if not isinstance(pending, list):
+            return []
+        now = time.time()
+        records = []
+        for record in pending:
+            if not isinstance(record, dict):
+                continue
+            try:
+                expires_at = float(record.get("expires_at") or 0.0)
+            except (TypeError, ValueError):
+                expires_at = 0.0
+            if expires_at and expires_at < now:
+                continue
+            records.append(record)
+        return records
+
+    def session_owner_record(
+        self,
+        *,
+        session_id: str | None = None,
+        session_path: Path | None = None,
+    ) -> dict[str, Any]:
+        owners = self.load_session_owners()
+        resolved_id = session_id or self.session_id_from_path(session_path)
+        if resolved_id and resolved_id in owners:
+            return owners[resolved_id]
+
+        if session_path is not None:
+            try:
+                resolved_path = str(session_path.expanduser().resolve())
+            except OSError:
+                resolved_path = str(session_path.expanduser())
+            for record in owners.values():
+                if str(record.get("rollout_path") or "") == resolved_path:
+                    return record
+        return {}
+
+    def session_is_foreign_owned(
+        self,
+        *,
+        session_id: str | None = None,
+        session_path: Path | None = None,
+    ) -> bool:
+        if not self.exclude_foreign_owned or not self.owner_id:
+            return False
+        record = self.session_owner_record(session_id=session_id, session_path=session_path)
+        owner = clean_owner_id(record.get("owner_id") or record.get("pet_id"))
+        if owner:
+            return owner != self.owner_id
+        path = session_path
+        if path is None and session_id:
+            path = self.session_path_for_id(session_id)
+        return bool(path is not None and self.session_matches_foreign_pending_owner(path))
+
+    def session_matches_foreign_pending_owner(self, session_path: Path) -> bool:
+        pending = self.load_pending_session_owners()
+        if not pending:
+            return False
+        try:
+            stat = session_path.stat()
+        except OSError:
+            return False
+        meta = self.rollout_meta(session_path)
+        meta_cwd = meta.get("cwd")
+        if not isinstance(meta_cwd, str) or not meta_cwd.strip():
+            return False
+        session_cwd = Path(meta_cwd).expanduser()
+        try:
+            resolved_session_path = str(session_path.expanduser().resolve())
+        except OSError:
+            resolved_session_path = str(session_path.expanduser())
+        for record in pending:
+            owner = clean_owner_id(record.get("owner_id") or record.get("pet_id"))
+            if not owner or owner == self.owner_id:
+                continue
+            known_rollouts = record.get("known_rollouts")
+            if isinstance(known_rollouts, list) and resolved_session_path in {str(item) for item in known_rollouts}:
+                continue
+            raw_cwd = clean_text(record.get("cwd"))
+            if not raw_cwd:
+                continue
+            try:
+                started_at = float(record.get("started_at") or 0.0)
+            except (TypeError, ValueError):
+                started_at = 0.0
+            if started_at and stat.st_mtime < started_at - 5.0:
+                continue
+            if same_path(session_cwd, Path(raw_cwd)):
+                return True
+        return False
+
+    def rollout_meta(self, path: Path) -> dict[str, Any]:
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for _ in range(24):
+                    line = handle.readline()
+                    if not line:
+                        break
+                    if '"session_meta"' not in line:
+                        continue
+                    event = json.loads(line)
+                    payload = event.get("payload")
+                    return payload if isinstance(payload, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return {}
 
     def consume_event(self, event: dict[str, Any]) -> None:
         payload = event.get("payload")
@@ -345,7 +513,6 @@ class CodexSessionMonitor:
         response_type = payload.get("type")
         if event.get("type") == "response_item":
             if response_type == "message":
-                self.pending_approval_calls.clear()
                 self.consume_response_message(payload)
             elif response_type == "reasoning":
                 self.active = True
@@ -392,9 +559,10 @@ class CodexSessionMonitor:
         call_id = self.clean(payload.get("call_id"), 80)
         args = self.parse_json_object(payload.get("arguments"))
         summary = self.tool_summary(name, args)
+        waiting_kind = self.function_waiting_kind(name, args) if self.function_waits_for_user(name, args) else ""
         if call_id:
             self.pending_calls[call_id] = summary
-            if name == "exec_command":
+            if waiting_kind == "approval":
                 now = time.monotonic()
                 grace_seconds = self.approval_grace_seconds(args)
                 self.pending_approval_calls[call_id] = (
@@ -402,10 +570,10 @@ class CodexSessionMonitor:
                     now,
                     now + grace_seconds,
                 )
-        if self.function_waits_for_user(name, args):
+        if waiting_kind:
             self.active = False
             self.awaiting_user = True
-            self.waiting_kind = self.function_waiting_kind(name, args)
+            self.waiting_kind = waiting_kind
             self.replyable = self.waiting_kind in {"choice", "prompt"}
             self.current_action = self.waiting_summary(name, args)
             self.status_text = self.current_action
@@ -437,13 +605,6 @@ class CodexSessionMonitor:
         summary = "Editing files" if name == "apply_patch" else f"Using {name}"
         if call_id:
             self.pending_calls[call_id] = summary
-            if name == "apply_patch":
-                now = time.monotonic()
-                self.pending_approval_calls[call_id] = (
-                    self.patch_waiting_summary(payload.get("input")),
-                    now,
-                    now + 0.8,
-                )
         self.active = True
         self.awaiting_user = False
         self.waiting_kind = ""
@@ -604,16 +765,8 @@ class CodexSessionMonitor:
             return "prompt"
         return "prompt"
 
-    def approval_grace_seconds(self, args: dict[str, Any]) -> float:
-        if args.get("sandbox_permissions") == "require_escalated":
-            return 0.0
-        try:
-            yield_ms = float(args.get("yield_time_ms", 1000))
-        except (TypeError, ValueError):
-            yield_ms = 1000.0
-        if not 0 <= yield_ms <= 60_000:
-            yield_ms = 1000.0
-        return max(2.5, min((yield_ms / 1000.0) + 1.0, 15.0))
+    def approval_grace_seconds(self, _args: dict[str, Any]) -> float:
+        return 0.0
 
     def waiting_summary(self, name: str, args: dict[str, Any]) -> str:
         if name == "exec_command":
@@ -724,6 +877,8 @@ class CodexSessionMonitor:
                 continue
             session_id = event.get("session_id")
             if isinstance(session_id, str) and UUID_RE.match(session_id):
+                if self.session_is_foreign_owned(session_id=session_id):
+                    continue
                 return session_id
         return None
 
@@ -774,6 +929,8 @@ def write_active_session_pointer(
     session_path: Path,
     selector: str,
     cwd: Path | None = None,
+    owner_id: str | None = None,
+    owner_label: str | None = None,
 ) -> Path:
     home = codex_home or (Path.home() / ".codex")
     resolved_path = session_path.expanduser().resolve()
@@ -785,6 +942,8 @@ def write_active_session_pointer(
         session_path=resolved_path,
         selector=selector,
         cwd=cwd,
+        owner_id=owner_id,
+        owner_label=owner_label,
     )
 
 
@@ -795,17 +954,231 @@ def write_session_pointer(
     session_path: Path,
     selector: str,
     cwd: Path | None = None,
+    owner_id: str | None = None,
+    owner_label: str | None = None,
+    terminal_state: str | None = None,
+    terminal_pid: int | None = None,
+    terminal_exit_code: int | None = None,
+    terminal_closed_at: float | None = None,
 ) -> Path:
     home = codex_home or (Path.home() / ".codex")
     resolved_path = session_path.expanduser().resolve()
     monitor = CodexSessionMonitor(selector=str(resolved_path), codex_home=home)
     pointer = pointer_path.expanduser()
     pointer.parent.mkdir(parents=True, exist_ok=True)
+    clean_owner = clean_owner_id(owner_id)
+    clean_label = " ".join(str(owner_label or "").split())
     payload = {
         "selector": selector,
         "session_id": monitor.session_id_from_path(resolved_path),
         "rollout_path": str(resolved_path),
         "cwd": str((cwd or Path.cwd()).expanduser().resolve()),
     }
+    if clean_owner:
+        payload["owner_id"] = clean_owner
+    if clean_label:
+        payload["owner_label"] = clean_label
+    if terminal_state:
+        payload["terminal_state"] = clean_text(terminal_state)
+    if terminal_pid is not None:
+        payload["terminal_pid"] = int(terminal_pid)
+    if terminal_exit_code is not None:
+        payload["terminal_exit_code"] = int(terminal_exit_code)
+    if terminal_closed_at is not None:
+        payload["terminal_closed_at"] = float(terminal_closed_at)
+    pointer.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if clean_owner:
+        write_session_owner(
+            codex_home=home,
+            session_path=resolved_path,
+            owner_id=clean_owner,
+            owner_label=clean_label,
+            pointer_path=pointer,
+            selector=selector,
+            cwd=cwd,
+        )
+    return pointer
+
+
+def write_terminal_pointer_state(
+    *,
+    pointer_path: Path,
+    codex_home: Path | None,
+    selector: str,
+    cwd: Path | None = None,
+    owner_id: str | None = None,
+    owner_label: str | None = None,
+    terminal_state: str,
+    terminal_pid: int | None = None,
+    terminal_exit_code: int | None = None,
+    terminal_closed_at: float | None = None,
+) -> Path:
+    pointer = pointer_path.expanduser()
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    clean_owner = clean_owner_id(owner_id)
+    clean_label = clean_text(owner_label)
+    payload: dict[str, Any] = {
+        "selector": selector,
+        "cwd": str((cwd or Path.cwd()).expanduser().resolve()),
+        "terminal_state": clean_text(terminal_state),
+    }
+    if clean_owner:
+        payload["owner_id"] = clean_owner
+    if clean_label:
+        payload["owner_label"] = clean_label
+    if terminal_pid is not None:
+        payload["terminal_pid"] = int(terminal_pid)
+    if terminal_exit_code is not None:
+        payload["terminal_exit_code"] = int(terminal_exit_code)
+    if terminal_closed_at is not None:
+        payload["terminal_closed_at"] = float(terminal_closed_at)
     pointer.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return pointer
+
+
+def write_session_owner(
+    *,
+    codex_home: Path | None,
+    session_path: Path,
+    owner_id: str,
+    owner_label: str | None = None,
+    pointer_path: Path | None = None,
+    selector: str = "",
+    cwd: Path | None = None,
+) -> Path:
+    home = codex_home or (Path.home() / ".codex")
+    resolved_path = session_path.expanduser().resolve()
+    monitor = CodexSessionMonitor(selector=str(resolved_path), codex_home=home)
+    session_id = monitor.session_id_from_path(resolved_path)
+    registry = home / ACTIVE_SESSION_DIR / SESSION_OWNERS_FILE
+    registry.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, Any] = {}
+    if registry.is_file():
+        try:
+            parsed = json.loads(registry.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                data = parsed
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+    sessions = data.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+    data["sessions"] = sessions
+
+    key = session_id or str(resolved_path)
+    record: dict[str, Any] = {
+        "owner_id": clean_owner_id(owner_id),
+        "rollout_path": str(resolved_path),
+        "selector": selector,
+        "cwd": str((cwd or Path.cwd()).expanduser().resolve()),
+        "updated_at": time.time(),
+    }
+    if session_id:
+        record["session_id"] = session_id
+    clean_label = " ".join(str(owner_label or "").split())
+    if clean_label:
+        record["owner_label"] = clean_label
+    if pointer_path is not None:
+        record["pointer_path"] = str(pointer_path.expanduser())
+    sessions[key] = record
+
+    if len(sessions) > 240:
+        sortable = sorted(
+            sessions.items(),
+            key=lambda item: float(item[1].get("updated_at") or 0.0) if isinstance(item[1], dict) else 0.0,
+            reverse=True,
+        )
+        data["sessions"] = dict(sortable[:240])
+
+    tmp = registry.with_name(registry.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(registry)
+    return registry
+
+
+def write_pending_session_owner(
+    *,
+    codex_home: Path | None,
+    owner_id: str,
+    owner_label: str | None = None,
+    cwd: Path | None = None,
+    pointer_path: Path | None = None,
+    selector: str = "terminal",
+    ttl_seconds: float = 180.0,
+) -> Path:
+    home = codex_home or (Path.home() / ".codex")
+    registry = home / ACTIVE_SESSION_DIR / SESSION_OWNERS_FILE
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+
+    data: dict[str, Any] = {}
+    if registry.is_file():
+        try:
+            parsed = json.loads(registry.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                data = parsed
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+    sessions = data.get("sessions")
+    if not isinstance(sessions, dict):
+        data["sessions"] = {}
+
+    pending = data.get("pending")
+    if not isinstance(pending, list):
+        pending = []
+
+    clean_owner = clean_owner_id(owner_id)
+    clean_label = clean_text(owner_label)
+    resolved_cwd = (cwd or Path.cwd()).expanduser().resolve()
+    resolved_pointer = str(pointer_path.expanduser()) if pointer_path is not None else ""
+    sessions_root = home / "sessions"
+    known_rollouts: list[str] = []
+    if sessions_root.exists():
+        for path in sessions_root.rglob("rollout-*.jsonl"):
+            if not path.is_file():
+                continue
+            try:
+                known_rollouts.append(str(path.resolve()))
+            except OSError:
+                continue
+
+    record: dict[str, Any] = {
+        "owner_id": clean_owner,
+        "selector": selector,
+        "cwd": str(resolved_cwd),
+        "started_at": now,
+        "expires_at": now + max(10.0, float(ttl_seconds)),
+        "known_rollouts": known_rollouts,
+    }
+    if clean_label:
+        record["owner_label"] = clean_label
+    if resolved_pointer:
+        record["pointer_path"] = resolved_pointer
+
+    fresh = []
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        try:
+            expires_at = float(item.get("expires_at") or 0.0)
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        if expires_at and expires_at < now:
+            continue
+        if (
+            clean_owner_id(item.get("owner_id") or item.get("pet_id")) == clean_owner
+            and clean_text(item.get("cwd")) == str(resolved_cwd)
+            and clean_text(item.get("pointer_path")) == resolved_pointer
+        ):
+            continue
+        fresh.append(item)
+    fresh.append(record)
+    data["pending"] = fresh[-80:]
+
+    tmp = registry.with_name(registry.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(registry)
+    return registry

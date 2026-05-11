@@ -133,6 +133,7 @@
       "height": 300,
       "attentionAnimation": "waiting",
       "approvalBridgeEnabled": true,
+      "exitOnTerminalClose": false,
       "minimizedDotsHeadroom": 34
     },
     "codexUsage": {

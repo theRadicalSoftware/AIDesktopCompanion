@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
-from .codex_monitor import write_session_pointer
+from .codex_monitor import write_session_pointer, write_terminal_pointer_state
 
 
 def rollout_files(codex_home: Path) -> list[Path]:
@@ -47,12 +48,16 @@ def choose_rollout(codex_home: Path, cwd: Path, known: dict[Path, float], starte
     candidates: list[tuple[float, Path]] = []
     for path in rollout_files(codex_home):
         try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in known:
+            continue
+        try:
             mtime = path.stat().st_mtime
         except OSError:
             continue
         if mtime < started_at - 4:
-            continue
-        if mtime <= known.get(path, 0.0) + 0.001:
             continue
         meta = rollout_meta(path)
         meta_cwd = meta.get("cwd")
@@ -63,7 +68,7 @@ def choose_rollout(codex_home: Path, cwd: Path, known: dict[Path, float], starte
             score = mtime - 10_000
         else:
             score = mtime
-        candidates.append((score, path))
+        candidates.append((score, resolved))
     if not candidates:
         return None
     return max(candidates, key=lambda item: item[0])[1].resolve()
@@ -109,22 +114,92 @@ def run_bridge(args: argparse.Namespace) -> int:
     started_at = time.time()
     print("Starting Codex terminal session for desktop companion.", flush=True)
     print(f"Working directory: {cwd}", flush=True)
+    if args.owner_label or args.owner_id:
+        print(f"Session owner: {args.owner_label or args.owner_id}", flush=True)
+    linked: Path | None = None
+    stop_requested = False
     process = subprocess.Popen(command, cwd=str(cwd))
 
-    linked: Path | None = None
-    while process.poll() is None:
-        candidate = choose_rollout(codex_home, cwd, known, started_at)
-        if candidate is not None and candidate != linked:
-            linked = candidate
+    def request_stop(_signum: int, _frame: Any) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+        if process.poll() is None:
+            process.terminate()
+
+    for sig in (getattr(signal, "SIGHUP", None), signal.SIGTERM, signal.SIGINT):
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, request_stop)
+        except (OSError, ValueError):
+            continue
+
+    write_terminal_pointer_state(
+        pointer_path=pointer,
+        codex_home=codex_home,
+        selector="terminal",
+        cwd=cwd,
+        owner_id=args.owner_id,
+        owner_label=args.owner_label,
+        terminal_state="running",
+        terminal_pid=process.pid,
+    )
+
+    try:
+        while process.poll() is None and not stop_requested:
+            candidate = choose_rollout(codex_home, cwd, known, started_at)
+            if candidate is not None and candidate != linked:
+                linked = candidate
+                write_session_pointer(
+                    pointer_path=pointer,
+                    codex_home=codex_home,
+                    session_path=candidate,
+                    selector="terminal",
+                    cwd=cwd,
+                    owner_id=args.owner_id,
+                    owner_label=args.owner_label,
+                    terminal_state="running",
+                    terminal_pid=process.pid,
+                )
+                print(f"Linked companion to Codex rollout: {candidate}", flush=True)
+            time.sleep(max(0.5, float(args.poll_seconds)))
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2.0)
+
+        exit_code = int(process.returncode or 0)
+        if linked is not None:
             write_session_pointer(
                 pointer_path=pointer,
                 codex_home=codex_home,
-                session_path=candidate,
+                session_path=linked,
                 selector="terminal",
                 cwd=cwd,
+                owner_id=args.owner_id,
+                owner_label=args.owner_label,
+                terminal_state="closed",
+                terminal_pid=process.pid,
+                terminal_exit_code=exit_code,
+                terminal_closed_at=time.time(),
             )
-            print(f"Linked companion to Codex rollout: {candidate}", flush=True)
-        time.sleep(max(0.5, float(args.poll_seconds)))
+        else:
+            write_terminal_pointer_state(
+                pointer_path=pointer,
+                codex_home=codex_home,
+                selector="terminal",
+                cwd=cwd,
+                owner_id=args.owner_id,
+                owner_label=args.owner_label,
+                terminal_state="closed",
+                terminal_pid=process.pid,
+                terminal_exit_code=exit_code,
+                terminal_closed_at=time.time(),
+            )
 
     return int(process.returncode or 0)
 
@@ -134,6 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pointer", required=True, help="JSON pointer file watched by the pet.")
     parser.add_argument("--cwd", required=True, help="Working directory for the Codex terminal.")
     parser.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    parser.add_argument("--owner-id", help="Pet id that owns the spawned terminal session.")
+    parser.add_argument("--owner-label", help="Display name for the pet that owns the session.")
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to run after --. Defaults to codex.")
     return parser

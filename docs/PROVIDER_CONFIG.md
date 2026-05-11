@@ -16,9 +16,15 @@ Useful selectors:
 
 - `current`: last local Codex session recorded by the Codex CLI
 - `latest`: most recently updated rollout file
+- `active`: explicit pinned rollout stored by `python3 run.py link-session`
+- `pointer:/path/to/session.json`: pet-specific pointer file with a rollout path or session id
 - `off`: no Codex session bubble
 - a Codex session id
 - an absolute `rollout-*.jsonl` path
+
+When a pet launches a companion Codex terminal, the terminal bridge writes a private pointer file and records the session owner in `~/.codex/ai-desktop-companion/session-owners.json`. Pets using broad selectors such as `current` or `latest` skip sessions owned by a different pet.
+
+Command approval buttons are driven by explicit Codex rollout calls with `sandbox_permissions: "require_escalated"`. Ordinary running commands stay in the working state. The visible terminal title fallback is only used when the rollout is idle or already has a pending approval, so stale `Action Required` terminal titles do not turn active work into a false approval prompt.
 
 ## Claude
 

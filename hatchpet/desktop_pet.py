@@ -40,7 +40,7 @@ from .codex_bridge import (
     progress_from_json_line,
     short_work_title,
 )
-from .codex_monitor import CodexSessionMonitor, CodexStatus
+from .codex_monitor import CodexSessionMonitor, CodexStatus, write_pending_session_owner
 from .codex_usage import CodexUsageMonitor, CodexUsageStatus, UsageWindow
 from .pet_format import DEFAULT_PETS_DIR
 
@@ -1477,6 +1477,8 @@ class DesktopPet(QWidget):
         self.pet_dir = pet_dir
         self.repo_root = Path(__file__).resolve().parents[1]
         self.manifest = json.loads((pet_dir / "pet.json").read_text(encoding="utf-8"))
+        self.pet_id = str(self.manifest.get("id") or pet_dir.name).strip() or pet_dir.name
+        self.pet_name = str(self.manifest.get("name") or self.pet_id).strip() or self.pet_id
         self.cell_width = int(self.manifest["cellWidth"])
         self.cell_height = int(self.manifest["cellHeight"])
         self.frame_count = int(self.manifest["frameCount"])
@@ -1551,6 +1553,9 @@ class DesktopPet(QWidget):
         codex_bubble_enabled = bool(codex_bubble.get("enabled", True))
         self.codex_attention_animation = str(codex_bubble.get("attentionAnimation", "codex-attention"))
         self.codex_approval_bridge_enabled = bool(codex_bubble.get("approvalBridgeEnabled", True))
+        self.exit_on_terminal_close = bool(codex_bubble.get("exitOnTerminalClose", False))
+        self.terminal_close_pointer_path: Path | None = None
+        self.terminal_close_timer: QTimer | None = None
         self.thought_dot_headroom = max(0, int(round(float(codex_bubble.get("minimizedDotsHeadroom", 34)) * self.scale)))
         codex_usage = runtime.get("codexUsage", {})
         codex_usage_enabled = bool(codex_usage.get("enabled", True))
@@ -1747,11 +1752,17 @@ class DesktopPet(QWidget):
             self.thought_bubble.approval_requested.connect(self.submit_codex_approval)
             self.thought_bubble.expand_requested.connect(self.toggle_thought_bubble_expanded)
             if codex_session_enabled:
-                self.codex_monitor = CodexSessionMonitor(selector=self.codex_session)
+                self.codex_monitor = CodexSessionMonitor(selector=self.codex_session, owner_id=self.pet_id)
             self.codex_timer = QTimer(self)
             self.codex_timer.timeout.connect(self.tick_codex_status)
             self.codex_timer.start(1200)
             self.tick_codex_status()
+            if self.exit_on_terminal_close:
+                self.terminal_close_pointer_path = self.pointer_path_from_selector(self.codex_session)
+                if self.terminal_close_pointer_path is not None:
+                    self.terminal_close_timer = QTimer(self)
+                    self.terminal_close_timer.timeout.connect(self.tick_terminal_lifecycle)
+                    self.terminal_close_timer.start(1200)
 
         if self.work_drop_enabled:
             bubble_sprite = Path(str(codex_bubble.get("sprite", ""))).expanduser()
@@ -2112,13 +2123,45 @@ class DesktopPet(QWidget):
 
     def terminal_approval_can_override_status(self, status: CodexStatus | None) -> bool:
         if status is None:
-            return True
-        if status.waiting_kind == "approval" or status.waiting_for_user:
-            return True
-        if not status.active:
+            return False
+        if status.waiting_kind == "approval":
             return True
         monitor = self.codex_monitor
-        return bool(monitor is not None and monitor.pending_approval_calls)
+        if monitor is not None and monitor.pending_approval_summary():
+            return True
+        if status.waiting_for_user:
+            return False
+        return not status.active
+
+    def pointer_path_from_selector(self, selector: str) -> Path | None:
+        text = str(selector or "").strip()
+        if not text.startswith("pointer:"):
+            return None
+        pointer = Path(text[len("pointer:") :]).expanduser()
+        if not pointer.is_absolute():
+            pointer = self.repo_root / pointer
+        return pointer
+
+    def tick_terminal_lifecycle(self) -> None:
+        pointer = self.terminal_close_pointer_path
+        if pointer is None or not pointer.is_file():
+            return
+        try:
+            data = json.loads(pointer.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        state = str(data.get("terminal_state") or "").strip().lower()
+        if state not in {"closed", "exited", "terminated"}:
+            return
+        if self.terminal_close_timer is not None:
+            self.terminal_close_timer.stop()
+            self.terminal_close_timer = None
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def codex_bubble_detail(self, status) -> str:
         detail = status.detail
@@ -2681,6 +2724,17 @@ class DesktopPet(QWidget):
         entry_id = str(entry.get("id") or entry.get("pet") or "companion").strip() or "companion"
         return manifest_path.parent / "runtime-codex" / f"{entry_id}-session.json"
 
+    def companion_manifest_identity(self, manifest_path: Path) -> tuple[str, str]:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        if not isinstance(manifest, dict):
+            manifest = {}
+        pet_id = str(manifest.get("id") or manifest_path.parent.name).strip() or manifest_path.parent.name
+        pet_name = str(manifest.get("name") or pet_id).strip() or pet_id
+        return pet_id, pet_name
+
     def companion_terminal_cwd(self, entry: dict[str, object], manifest_path: Path) -> Path:
         terminal = entry.get("codex_terminal") if isinstance(entry.get("codex_terminal"), dict) else {}
         raw_cwd = terminal.get("cwd") or entry.get("cwd") or self.default_work_cwd()
@@ -2760,6 +2814,15 @@ class DesktopPet(QWidget):
         terminal = entry.get("codex_terminal") if isinstance(entry.get("codex_terminal"), dict) else {}
         cwd = self.companion_terminal_cwd(entry, manifest_path)
         title = str(terminal.get("title") or f"{entry.get('label') or 'Companion'} Codex").strip()
+        owner_id, owner_label = self.companion_manifest_identity(manifest_path)
+        write_pending_session_owner(
+            codex_home=None,
+            owner_id=owner_id,
+            owner_label=owner_label,
+            cwd=cwd,
+            pointer_path=pointer_path,
+            selector="terminal",
+        )
         bridge = [
             sys.executable,
             "-m",
@@ -2768,6 +2831,10 @@ class DesktopPet(QWidget):
             str(pointer_path),
             "--cwd",
             str(cwd),
+            "--owner-id",
+            owner_id,
+            "--owner-label",
+            owner_label,
             "--",
             *self.companion_codex_command(entry, cwd),
         ]
@@ -2851,7 +2918,8 @@ class DesktopPet(QWidget):
         detail = f"{label} launched with Codex session selector `{codex_session}`."
         if terminal_detail:
             detail += "\n" + terminal_detail
-        self.set_work_status("Companion launched", detail, active=False, hold=True)
+        self.push_work_history(detail)
+        self.work_status_until = 0.0
 
     def open_ask_dialog(self) -> None:
         self.open_bubble_reply()

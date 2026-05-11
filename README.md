@@ -61,7 +61,7 @@ python3 run.py doctor
 - Can stream Claude responses into the thought bubble when configured.
 - Can send and poll Slack messages when configured.
 - Can run guarded GitHub actions such as push and merge/push through local Git/SSH.
-- Can spawn additional companion pets as separate local processes, each with its own pet pack and Codex session selector.
+- Can spawn additional companion pets as separate local processes, each with its own pet pack, Codex session selector, and optional pet-owned Codex terminal.
 
 ## Run A Different Pet
 
@@ -110,7 +110,7 @@ Pet manifests can expose a right-click `Companions` submenu. Each entry starts a
 }
 ```
 
-Use `codexSession: "off"` for a fresh independent companion that can still run its own Ask Codex and file-drop work without a visible terminal. Use `codexSession: "terminal"` to open a new Codex terminal and start the spawned pet against a private `pointer:` file under that pet's runtime folder. Use an explicit Codex session id or `rollout-*.jsonl` path only when you want that pet to monitor and reply to one known existing terminal session. Avoid using `current`, `latest`, or `active` for multiple pets unless you intentionally want them to follow the same global selector.
+Use `codexSession: "off"` for a fresh independent companion that can still run its own Ask Codex and file-drop work without a visible terminal. Use `codexSession: "terminal"` to open a new Codex terminal and start the spawned pet against a private `pointer:` file under that pet's runtime folder. Terminal sessions are recorded in `~/.codex/ai-desktop-companion/session-owners.json`, so pets using broad `current` or `latest` selectors skip sessions owned by another pet. A terminal-scoped pet can set `runtime.codexBubble.exitOnTerminalClose` to `true` to disappear when its owned Codex terminal closes. Use an explicit Codex session id or `rollout-*.jsonl` path only when you want that pet to monitor and reply to one known existing terminal session.
 
 ## Create Your Own Pet
 
