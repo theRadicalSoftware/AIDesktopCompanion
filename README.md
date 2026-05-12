@@ -116,7 +116,9 @@ Use `codexSession: "off"` for a fresh independent companion that can still run i
 
 Right-click a running companion and choose `Worktree Tasks -> New Worktree Task...` to create a Git worktree from the current repository `HEAD`, launch a Codex terminal in that isolated checkout, and bind the terminal to the pet. If the manifest has companion entries enabled, the first companion can become the visible task owner; otherwise the current pet opens the scoped terminal itself.
 
-Task records live under `~/.codex/ai-desktop-companion/worktree-tasks.json`, with generated checkouts under `~/.codex/worktrees/ai-desktop-companion/` by default. The menu can show task summaries, open task terminals and folders, and remove a task only when its worktree is clean.
+Task records live under `~/.codex/ai-desktop-companion/worktree-tasks.json`, with generated checkouts under `~/.codex/worktrees/ai-desktop-companion/` by default. The menu can show task summaries, open task terminals and folders, launch the `Review / Handoff` pane, and remove a task only when its worktree is clean.
+
+The review pane shows changed files, full diffs, staged/unstaged views, hunk controls, commit controls, branch creation, branch push, pull-request opening, and safe handoff back to the main checkout. Handoff requires a clean main checkout; it creates a checkpoint commit in the worktree, writes a patch backup under the local repo's `.git/ai-desktop-companion-review-backups/`, then cherry-picks the checkpoint locally.
 
 CLI equivalents:
 
@@ -125,6 +127,10 @@ python3 run.py worktree-task-create "Fix the failing tests" --cwd . --open-termi
 python3 run.py worktree-task-list
 python3 run.py worktree-task-status <task-id>
 python3 run.py worktree-task-terminal <task-id>
+python3 run.py worktree-task-diff <task-id>
+python3 run.py worktree-task-stage <task-id> <path>
+python3 run.py worktree-task-commit <task-id> -m "Commit message"
+python3 run.py worktree-task-handoff <task-id> -m "Handoff checkpoint"
 python3 run.py worktree-task-remove <task-id>
 ```
 

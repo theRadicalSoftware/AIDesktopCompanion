@@ -15,6 +15,20 @@ from .codex_pet_compat import (
     import_codex_pet,
     official_pet_package_dir,
 )
+from .git_review import (
+    GitReviewError,
+    commit_staged,
+    create_branch,
+    diff_for_file,
+    handoff_staged_to_local,
+    open_pull_request,
+    push_branch,
+    revert_file,
+    stage_all,
+    stage_file,
+    unstage_all,
+    unstage_file,
+)
 from .import_sheet import import_action_sheet, import_idle_pickup_sheet, import_named_row_sheet, import_pose_sheet
 from .pet_format import DEFAULT_PETS_DIR, pet_paths
 from .worktree_tasks import (
@@ -28,6 +42,7 @@ from .worktree_tasks import (
     remove_worktree_task,
     summarize_tasks,
     task_status_report,
+    update_worktree_task,
 )
 
 
@@ -253,6 +268,71 @@ def cmd_worktree_task_branch(args: argparse.Namespace) -> int:
 def cmd_worktree_task_remove(args: argparse.Namespace) -> int:
     task = remove_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home), force=args.force)
     print(f"Removed worktree task: {task.task_id}")
+    return 0
+
+
+def cmd_worktree_task_diff(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    print(diff_for_file(task.worktree_path, args.path or "", scope=args.scope), end="")
+    return 0
+
+
+def cmd_worktree_task_stage(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    if not args.all and not args.path:
+        raise GitReviewError("Path is required unless --all is used.")
+    detail = stage_all(task.worktree_path) if args.all else stage_file(task.worktree_path, args.path)
+    print(detail)
+    return 0
+
+
+def cmd_worktree_task_unstage(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    if not args.all and not args.path:
+        raise GitReviewError("Path is required unless --all is used.")
+    detail = unstage_all(task.worktree_path) if args.all else unstage_file(task.worktree_path, args.path)
+    print(detail)
+    return 0
+
+
+def cmd_worktree_task_revert(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    print(revert_file(task.worktree_path, args.path))
+    return 0
+
+
+def cmd_worktree_task_commit(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    sha = commit_staged(task.worktree_path, args.message)
+    update_worktree_task(task.task_id, codex_home=cli_codex_home(args.codex_home), status="committed", last_commit=sha)
+    print(sha)
+    return 0
+
+
+def cmd_worktree_task_push(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    if args.branch:
+        create_branch(task.worktree_path, args.branch)
+        update_worktree_task(task.task_id, codex_home=cli_codex_home(args.codex_home), branch=args.branch, mode="branch")
+    detail = push_branch(task.worktree_path, args.remote)
+    update_worktree_task(task.task_id, codex_home=cli_codex_home(args.codex_home), status="pushed")
+    print(detail)
+    return 0
+
+
+def cmd_worktree_task_pr(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    detail = open_pull_request(task.worktree_path, remote=args.remote, base_branch=args.base)
+    update_worktree_task(task.task_id, codex_home=cli_codex_home(args.codex_home), status="pr-ready", pr_detail=detail)
+    print(detail)
+    return 0
+
+
+def cmd_worktree_task_handoff(args: argparse.Namespace) -> int:
+    task = get_worktree_task(args.task_id, codex_home=cli_codex_home(args.codex_home))
+    sha = handoff_staged_to_local(task.worktree_path, task.repo_root, args.message)
+    update_worktree_task(task.task_id, codex_home=cli_codex_home(args.codex_home), status="handed-off", handoff_commit=sha)
+    print(sha)
     return 0
 
 
@@ -504,6 +584,59 @@ def build_parser() -> argparse.ArgumentParser:
     wt_remove.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
     wt_remove.add_argument("--force", action="store_true", help="Force removal even when the worktree has changes.")
     wt_remove.set_defaults(func=cmd_worktree_task_remove)
+
+    wt_diff = subparsers.add_parser("worktree-task-diff", help="Print a task diff.")
+    wt_diff.add_argument("task_id", help="Worktree task id.")
+    wt_diff.add_argument("path", nargs="?", default="", help="Optional changed path.")
+    wt_diff.add_argument("--scope", choices=("all", "staged", "unstaged"), default="all")
+    wt_diff.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_diff.set_defaults(func=cmd_worktree_task_diff)
+
+    wt_stage = subparsers.add_parser("worktree-task-stage", help="Stage a task file or all task changes.")
+    wt_stage.add_argument("task_id", help="Worktree task id.")
+    wt_stage.add_argument("path", nargs="?", default="", help="Changed path to stage.")
+    wt_stage.add_argument("--all", action="store_true", help="Stage all changes.")
+    wt_stage.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_stage.set_defaults(func=cmd_worktree_task_stage)
+
+    wt_unstage = subparsers.add_parser("worktree-task-unstage", help="Unstage a task file or all staged task changes.")
+    wt_unstage.add_argument("task_id", help="Worktree task id.")
+    wt_unstage.add_argument("path", nargs="?", default="", help="Changed path to unstage.")
+    wt_unstage.add_argument("--all", action="store_true", help="Unstage all changes.")
+    wt_unstage.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_unstage.set_defaults(func=cmd_worktree_task_unstage)
+
+    wt_revert = subparsers.add_parser("worktree-task-revert", help="Revert one task file.")
+    wt_revert.add_argument("task_id", help="Worktree task id.")
+    wt_revert.add_argument("path", help="Changed path to revert.")
+    wt_revert.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_revert.set_defaults(func=cmd_worktree_task_revert)
+
+    wt_commit = subparsers.add_parser("worktree-task-commit", help="Commit staged task changes.")
+    wt_commit.add_argument("task_id", help="Worktree task id.")
+    wt_commit.add_argument("-m", "--message", required=True, help="Commit message.")
+    wt_commit.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_commit.set_defaults(func=cmd_worktree_task_commit)
+
+    wt_push = subparsers.add_parser("worktree-task-push", help="Push a task branch.")
+    wt_push.add_argument("task_id", help="Worktree task id.")
+    wt_push.add_argument("--branch", help="Create this branch before pushing, useful for detached tasks.")
+    wt_push.add_argument("--remote", default="origin", help="Git remote. Defaults to origin.")
+    wt_push.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_push.set_defaults(func=cmd_worktree_task_push)
+
+    wt_pr = subparsers.add_parser("worktree-task-pr", help="Open or print a GitHub pull request URL for a task branch.")
+    wt_pr.add_argument("task_id", help="Worktree task id.")
+    wt_pr.add_argument("--remote", default="origin", help="Git remote. Defaults to origin.")
+    wt_pr.add_argument("--base", default="main", help="Base branch. Defaults to main.")
+    wt_pr.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_pr.set_defaults(func=cmd_worktree_task_pr)
+
+    wt_handoff = subparsers.add_parser("worktree-task-handoff", help="Cherry-pick staged task changes into the main checkout.")
+    wt_handoff.add_argument("task_id", help="Worktree task id.")
+    wt_handoff.add_argument("-m", "--message", required=True, help="Checkpoint commit message.")
+    wt_handoff.add_argument("--codex-home", help="Override Codex home. Defaults to ~/.codex.")
+    wt_handoff.set_defaults(func=cmd_worktree_task_handoff)
 
     import_sheet = subparsers.add_parser("import-sheet", help="Import generated pose-sheet rows into a pet atlas.")
     import_sheet.add_argument("pet", help="Pet id or path to a pet folder.")

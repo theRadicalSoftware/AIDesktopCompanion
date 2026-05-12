@@ -199,4 +199,6 @@ Use a separate pet folder for each companion so runtime state and output files d
 
 The default creates detached worktrees under `~/.codex/worktrees/ai-desktop-companion/`, records task state in `~/.codex/ai-desktop-companion/worktree-tasks.json`, and launches Codex with `workspace-write` plus `untrusted` approvals inside the generated checkout. Set `companionId` to one of the configured companion entries when worktree tasks should spawn a companion pet as the visible task owner.
 
+Each task can also open a `Review / Handoff` pane. The pane shows changed files, full diffs, staged/unstaged views, per-file actions, hunk staging/reverting, commit controls, branch creation, push, pull-request opening, and safe handoff to the main checkout. The matching CLI commands are `worktree-task-diff`, `worktree-task-stage`, `worktree-task-unstage`, `worktree-task-revert`, `worktree-task-commit`, `worktree-task-push`, `worktree-task-pr`, and `worktree-task-handoff`.
+
 Do not store API keys, Slack tokens, SSH keys, personal user IDs, or private project names in `pet.json`.

@@ -43,6 +43,7 @@ from .codex_bridge import (
 from .codex_monitor import CodexSessionMonitor, CodexStatus, write_pending_session_owner
 from .codex_usage import CodexUsageMonitor, CodexUsageStatus, UsageWindow
 from .pet_format import DEFAULT_PETS_DIR
+from .task_review import TaskReviewDialog
 from .worktree_tasks import (
     WorktreeTask,
     WorktreeTaskError,
@@ -1697,6 +1698,7 @@ class DesktopPet(QWidget):
         self.work_slack_logged_ts = ""
         self.work_github_action = ""
         self.work_github_cwd: Path | None = None
+        self.worktree_review_windows: list[TaskReviewDialog] = []
         self.pending_reply_request: WorkRequest | None = None
         self.pending_resume_reply: tuple[str, str] | None = None
         self.work_resume_session_id = ""
@@ -3084,6 +3086,30 @@ class DesktopPet(QWidget):
         except WorktreeTaskError as exc:
             detail = str(exc)
         self.set_work_status("Worktree task status", detail, active=False, hold=True)
+
+    def review_worktree_task(self, task_id: str) -> None:
+        try:
+            task = get_worktree_task(task_id)
+        except WorktreeTaskError as exc:
+            self.set_work_status("Worktree task missing", str(exc), active=False, hold=True)
+            return
+        dialog = TaskReviewDialog(
+            task,
+            parent=self,
+            title_prefix="Companion Worktree Review",
+            remote=self.github_remote,
+            main_branch=self.github_main_branch,
+            open_terminal=self.open_worktree_task_terminal,
+            open_folder=self.open_worktree_task_folder,
+            accent="cyan",
+        )
+        dialog.finished.connect(lambda _result, dialog=dialog: self.forget_worktree_review_window(dialog))
+        self.worktree_review_windows.append(dialog)
+        dialog.show()
+        self.set_work_status("Worktree review opened", task.label or task.task_id, active=False, hold=True)
+
+    def forget_worktree_review_window(self, dialog: TaskReviewDialog) -> None:
+        self.worktree_review_windows = [item for item in self.worktree_review_windows if item is not dialog]
 
     def open_worktree_task_terminal(self, task_id: str) -> None:
         try:
@@ -5061,6 +5087,12 @@ class DesktopPet(QWidget):
                         if len(task_label) > 34:
                             task_label = task_label[:31].rstrip() + "..."
                         task_menu = worktree_menu.addMenu(task_label)
+
+                        review_action = QAction("Review / Handoff", self)
+                        review_action.triggered.connect(
+                            lambda _checked=False, task_id=task.task_id: self.review_worktree_task(task_id)
+                        )
+                        task_menu.addAction(review_action)
 
                         status_action = QAction("Show Status", self)
                         status_action.triggered.connect(
