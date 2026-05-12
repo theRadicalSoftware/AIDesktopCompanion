@@ -3111,6 +3111,43 @@ class DesktopPet(QWidget):
     def forget_worktree_review_window(self, dialog: TaskReviewDialog) -> None:
         self.worktree_review_windows = [item for item in self.worktree_review_windows if item is not dialog]
 
+    def worktree_task_display_label(self, task: WorktreeTask, *, max_label: int = 44) -> str:
+        label = " ".join((task.label or task.task_id).split()) or task.task_id
+        if len(label) > max_label:
+            label = label[: max_label - 3].rstrip() + "..."
+        return f"{label} ({task.task_id[:11]})"
+
+    def choose_review_worktree_task(self) -> None:
+        try:
+            tasks = list_worktree_tasks()
+        except WorktreeTaskError as exc:
+            self.set_work_status("Worktree tasks unavailable", str(exc), active=False, hold=True)
+            return
+        if not tasks:
+            self.set_work_status(
+                "No worktree tasks",
+                "Create one from Worktree Tasks -> New Worktree Task..., then reopen Review / Handoff.",
+                active=False,
+                hold=True,
+            )
+            return
+        if len(tasks) == 1:
+            self.review_worktree_task(tasks[0].task_id)
+            return
+        choices = [self.worktree_task_display_label(task) for task in tasks]
+        selected, ok = QInputDialog.getItem(
+            self,
+            "Review / Handoff",
+            "Choose a worktree task:",
+            choices,
+            0,
+            False,
+        )
+        if not ok or not selected:
+            return
+        task_by_choice = dict(zip(choices, tasks))
+        self.review_worktree_task(task_by_choice[selected].task_id)
+
     def open_worktree_task_terminal(self, task_id: str) -> None:
         try:
             task = get_worktree_task(task_id)
@@ -3146,6 +3183,71 @@ class DesktopPet(QWidget):
             self.set_work_status("Worktree cleanup blocked", str(exc), active=False, hold=True)
             return
         self.set_work_status("Worktree task removed", task.task_id, active=False, hold=True)
+
+    def add_worktree_tasks_menu(self, menu: QMenu) -> None:
+        if not self.worktree_tasks_enabled:
+            return
+        worktree_menu = menu.addMenu("Worktree Tasks")
+        new_worktree_action = QAction("New Worktree Task...", self)
+        new_worktree_action.triggered.connect(self.start_worktree_task)
+        worktree_menu.addAction(new_worktree_action)
+
+        review_any_action = QAction("Review / Handoff...", self)
+        review_any_action.triggered.connect(self.choose_review_worktree_task)
+        worktree_menu.addAction(review_any_action)
+
+        summary_action = QAction("Show Task Summary", self)
+        summary_action.triggered.connect(self.show_worktree_task_summary)
+        worktree_menu.addAction(summary_action)
+
+        try:
+            tasks = list_worktree_tasks()
+        except WorktreeTaskError as exc:
+            tasks = []
+            worktree_menu.addSeparator()
+            error_action = QAction(f"Tasks unavailable: {exc}", self)
+            error_action.setEnabled(False)
+            worktree_menu.addAction(error_action)
+        if not tasks:
+            worktree_menu.addSeparator()
+            empty_action = QAction("No active worktree tasks", self)
+            empty_action.setEnabled(False)
+            worktree_menu.addAction(empty_action)
+            return
+
+        worktree_menu.addSeparator()
+        for task in tasks[:5]:
+            task_menu = worktree_menu.addMenu(self.worktree_task_display_label(task, max_label=34))
+
+            review_action = QAction("Review / Handoff", self)
+            review_action.triggered.connect(
+                lambda _checked=False, task_id=task.task_id: self.review_worktree_task(task_id)
+            )
+            task_menu.addAction(review_action)
+
+            status_action = QAction("Show Status", self)
+            status_action.triggered.connect(
+                lambda _checked=False, task_id=task.task_id: self.show_worktree_task_status(task_id)
+            )
+            task_menu.addAction(status_action)
+
+            terminal_action = QAction("Open Terminal", self)
+            terminal_action.triggered.connect(
+                lambda _checked=False, task_id=task.task_id: self.open_worktree_task_terminal(task_id)
+            )
+            task_menu.addAction(terminal_action)
+
+            folder_action = QAction("Open Folder", self)
+            folder_action.triggered.connect(
+                lambda _checked=False, task_id=task.task_id: self.open_worktree_task_folder(task_id)
+            )
+            task_menu.addAction(folder_action)
+
+            remove_action = QAction("Remove If Clean", self)
+            remove_action.triggered.connect(
+                lambda _checked=False, task_id=task.task_id: self.remove_clean_worktree_task(task_id)
+            )
+            task_menu.addAction(remove_action)
 
     def open_ask_dialog(self) -> None:
         self.open_bubble_reply()
@@ -5066,58 +5168,6 @@ class DesktopPet(QWidget):
                 publish_main_action.triggered.connect(lambda: self.start_github_action("merge_to_main"))
                 github_menu.addAction(publish_main_action)
 
-            if self.worktree_tasks_enabled:
-                worktree_menu = menu.addMenu("Worktree Tasks")
-                new_worktree_action = QAction("New Worktree Task...", self)
-                new_worktree_action.triggered.connect(self.start_worktree_task)
-                worktree_menu.addAction(new_worktree_action)
-
-                summary_action = QAction("Show Task Summary", self)
-                summary_action.triggered.connect(self.show_worktree_task_summary)
-                worktree_menu.addAction(summary_action)
-
-                try:
-                    tasks = list_worktree_tasks()
-                except WorktreeTaskError:
-                    tasks = []
-                if tasks:
-                    worktree_menu.addSeparator()
-                    for task in tasks[:5]:
-                        task_label = task.label or task.task_id
-                        if len(task_label) > 34:
-                            task_label = task_label[:31].rstrip() + "..."
-                        task_menu = worktree_menu.addMenu(task_label)
-
-                        review_action = QAction("Review / Handoff", self)
-                        review_action.triggered.connect(
-                            lambda _checked=False, task_id=task.task_id: self.review_worktree_task(task_id)
-                        )
-                        task_menu.addAction(review_action)
-
-                        status_action = QAction("Show Status", self)
-                        status_action.triggered.connect(
-                            lambda _checked=False, task_id=task.task_id: self.show_worktree_task_status(task_id)
-                        )
-                        task_menu.addAction(status_action)
-
-                        terminal_action = QAction("Open Terminal", self)
-                        terminal_action.triggered.connect(
-                            lambda _checked=False, task_id=task.task_id: self.open_worktree_task_terminal(task_id)
-                        )
-                        task_menu.addAction(terminal_action)
-
-                        folder_action = QAction("Open Folder", self)
-                        folder_action.triggered.connect(
-                            lambda _checked=False, task_id=task.task_id: self.open_worktree_task_folder(task_id)
-                        )
-                        task_menu.addAction(folder_action)
-
-                        remove_action = QAction("Remove If Clean", self)
-                        remove_action.triggered.connect(
-                            lambda _checked=False, task_id=task.task_id: self.remove_clean_worktree_task(task_id)
-                        )
-                        task_menu.addAction(remove_action)
-
             if self.work_process is not None:
                 stop_label = "Stop Work"
                 if self.work_request is not None:
@@ -5127,6 +5177,8 @@ class DesktopPet(QWidget):
                 menu.addAction(stop_action)
 
             menu.addSeparator()
+
+        self.add_worktree_tasks_menu(menu)
 
         if self.thought_bubble_controls_available():
             bubble_action = QAction(
